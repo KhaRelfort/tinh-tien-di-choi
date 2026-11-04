@@ -453,15 +453,23 @@ export default function App() {
       <div className="content">
         {syncNotice && <div className={`sync-banner ${conflictOperation ? 'conflict-banner' : ''}`}><span>{syncNotice}</span>{conflictOperation && <div className="conflict-actions"><button onClick={() => void resolveConflict(false)}>Dùng bản mới</button><button onClick={() => void resolveConflict(true)}>Áp dụng thay đổi của tôi</button></div>}{!conflictOperation && pendingCount > 0 && <button className="sync-retry" disabled={syncing || !isOnline} onClick={() => void processQueue()}>{syncing ? 'Đang thử...' : 'Thử đồng bộ lại'}</button>}{!conflictOperation && <button aria-label="Đóng thông báo" onClick={() => setSyncNotice('')}><X size={15} /></button>}</div>}
         {!isCloudConfigured && <div className="local-banner"><CloudOff size={15} /><span>Đang dùng chế độ trên thiết bị. Kết nối Supabase để đồng bộ sổ giữa các máy.</span><button onClick={() => setSyncNotice('Sao chép .env.example thành .env.local, thêm URL và anon key trong Supabase, rồi chạy lại ứng dụng.')}>Cấu hình</button></div>}
-        {page === 'expenses' && <><div className="page-heading"><div><h1>Khoản chi</h1></div></div><section className="summary-grid expense-summary-grid">
+        {/* NOTE(VI): Lý do: Bỏ text tiêu đề "Khoản chi" theo yêu cầu người dùng
+            Trước: Có <div className="page-heading"><div><h1>Khoản chi</h1></div></div>
+            Sau: Bỏ heading, vào thẳng các card tổng quan
+            Test: Xem trang Khoản chi -> Tiêu đề to "Khoản chi" đã biến mất, giao diện thoáng và gọn */}
+        {page === 'expenses' && <><section className="summary-grid expense-summary-grid">
             <article className="summary-card total-card"><div className="summary-top"><span>Tổng chi chưa thanh toán</span><span className="summary-icon green"><Wallet size={17} /></span></div><strong>{money(unpaidTotal)}</strong><div className="card-watermark">₫</div></article>
             <article className="summary-card"><div className="summary-top"><span>Chi tiêu tháng này</span></div><strong>{money(thisMonth)}</strong><div ref={monthlyChartRef} className="monthly-chart" aria-label="Chi tiêu theo tháng trong 6 tháng gần nhất"><div className="mini-bars">{monthlyExpenseTotals.map((item) => {
               const barHeight = maxMonthlyExpense ? item.total / maxMonthlyExpense * 92 : 0
               return <button key={item.key} type="button" className={`month-bar ${item.isCurrent ? 'current-month' : ''} ${item.total === 0 ? 'no-data' : ''} ${selectedChartMonth === item.key ? 'selected-month' : ''}`} title={`${item.title}: ${money(item.total)}`} aria-label={`${item.title}: ${money(item.total)}`} aria-pressed={selectedChartMonth === item.key} onClick={() => setSelectedChartMonth(item.key)}><i style={{ height: `${barHeight}%` }} />{selectedChartMonth === item.key && <><b style={{ bottom: `calc(${barHeight}% + 3px)` }}>{new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 1 }).format(item.total / 1000)}k</b><small>{item.label}</small></>}</button>
             })}</div></div></article>
           </section>
+          {/* NOTE(VI): Lý do: Bỏ text "Các khoản chi được ghi lại theo ngày", giữ nút In bill & Lọc cùng hàng không xuống dòng, căn thẳng hàng với tiêu đề
+              Trước: Có p phụ đề; nút bị co rớt chữ Lọc xuống dòng; tiêu đề bọc trong div thừa gây lệch hàng
+              Sau: Tiêu đề h2 trực tiếp trong panel-heading với align-items: center; nút có thẻ span và white-space: nowrap
+              Test: Xem phần Lịch sử chi tiêu -> Tiêu đề gọn gàng, căn thẳng hàng ngang tuyệt đối với 2 nút In bill và Lọc */}
           <CurrentMoneyOverview members={calculationMembers} balances={balances} /><section className="panel full-panel">
-            <div className="panel-heading"><div><h2>Lịch sử chi tiêu</h2><p>Các khoản chi được ghi lại theo ngày</p></div><div className="expense-panel-actions"><button className="filter-button" onClick={() => setShowBillModal(true)}><Printer size={14} /> In bill</button><button className={`filter-button ${showExpenseFilters ? 'active' : ''}`} aria-expanded={showExpenseFilters} onClick={() => setShowExpenseFilters((open) => !open)}><Filter size={14} /> Lọc{activeFilterCount > 0 && <span className="filter-badge">{activeFilterCount}</span>}</button></div></div>
+            <div className="panel-heading"><h2>Lịch sử chi tiêu</h2><div className="expense-panel-actions"><button type="button" className="filter-button" onClick={() => setShowBillModal(true)}><Printer size={14} /><span>In bill</span></button><button type="button" className={`filter-button ${showExpenseFilters ? 'active' : ''}`} aria-expanded={showExpenseFilters} onClick={() => setShowExpenseFilters((open) => !open)}><Filter size={14} /><span>Lọc</span>{activeFilterCount > 0 && <span className="filter-badge">{activeFilterCount}</span>}</button></div></div>
             {showExpenseFilters && <div className="expense-filters"><div className="expense-filter-fields">
               <label>Từ ngày<input type="date" value={expenseFilters.fromDate} onChange={(event) => setExpenseFilters({ ...expenseFilters, fromDate: event.target.value })} /></label>
               <label>Đến ngày<input type="date" value={expenseFilters.toDate} onChange={(event) => setExpenseFilters({ ...expenseFilters, toDate: event.target.value })} /></label>
@@ -472,9 +480,17 @@ export default function App() {
             <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.'} />
           </section></>}
 
-        {page === 'settlements' && <><div className="page-heading"><div><h1>Quyết toán</h1></div></div>
+        {/* NOTE(VI): Lý do: Bỏ text tiêu đề "Quyết toán" theo yêu cầu người dùng
+            Trước: Có <div className="page-heading"><div><h1>Quyết toán</h1></div></div>
+            Sau: Bỏ heading, vào thẳng thanh kỳ hiện tại và số dư
+            Test: Xem trang Quyết toán -> Tiêu đề to "Quyết toán" đã biến mất, giao diện thoáng và gọn */}
+        {page === 'settlements' && <>
           <section className="period-toolbar panel"><div className="period-current"><strong>Kỳ hiện tại</strong><span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span></div>{selectedPeriod?.status === 'open' && <button className="button primary" onClick={() => void closeCurrentPeriod()}><LockKeyhole size={15} /> Chốt kỳ</button>}</section>
-        <section className="settlement-layout"><div className="panel balance-panel"><div className="panel-heading"><div><h2>Số dư hiện tại</h2><p>Tính tất cả các khoản chưa thanh toán của các thành viên từ trước đến nay</p></div></div><div className="balance-list">{calculationMembers.length ? calculationMembers.map((member, index) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={index} /><span className="person-info"><strong>{member.name}</strong><small>{amount > 0 ? 'Sẽ nhận' : amount < 0 ? 'Cần trả' : 'Cân bằng'}</small></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div>}) : <div className="empty-state compact"><p>Chưa có thành viên phát sinh chi tiêu hoặc trả tiền.</p></div>}</div></div><SettlementSuggestionsPanel suggestions={suggestions} members={ledger.members} onRecord={(from, to, amount) => requestSettlementConfirmation(from, to, amount, ledger.periods.find((period) => period.status === 'open')?.id ?? '')} /></section>
+        {/* NOTE(VI): Lý do: Bỏ text phụ đề và chữ Cần trả/Sẽ nhận ở Số dư hiện tại trang Quyết toán theo yêu cầu
+            Trước: Có text "Tính tất cả các khoản chưa thanh toán..." và tag <small>Cần trả / Sẽ nhận</small>
+            Sau: Bỏ hẳn <p> và <small>, chỉ hiển thị tên và số tiền gọn gàng
+            Test: Vào tab Quyết toán -> Tiêu đề Số dư hiện tại gọn gàng, dòng thành viên chỉ hiển thị avatar, tên và số tiền */}
+        <section className="settlement-layout"><div className="panel balance-panel"><div className="panel-heading"><div><h2>Số dư hiện tại</h2></div></div><div className="balance-list">{calculationMembers.length ? calculationMembers.map((member, index) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={index} /><span className="person-info"><strong>{member.name}</strong></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div>}) : <div className="empty-state compact"><p>Chưa có thành viên phát sinh chi tiêu hoặc trả tiền.</p></div>}</div></div><SettlementSuggestionsPanel suggestions={suggestions} members={ledger.members} onRecord={(from, to, amount) => requestSettlementConfirmation(from, to, amount, ledger.periods.find((period) => period.status === 'open')?.id ?? '')} /></section>
           {/* NOTE(VI): Lý do: Ẩn bớt lịch sử trả tiền ở menu quyết toán cho gọn, bấm nút Xem/Thu gọn mới xổ xuống
               Trước: Lịch sử trả tiền luôn hiển thị đầy đủ làm trang bị dài
               Sau: Mặc định ẩn, có nút xổ xuống (ChevronDown) kèm số lượng lần trả tiền; bấm vào để bung ra hoặc thu gọn
@@ -794,10 +810,14 @@ function ExpenseList({ expenses, members, periods, onEdit, onDelete, emptyText }
 }
 
 function CurrentMoneyOverview({ members, balances }: { members: Member[]; balances: Map<string, number> }) {
+  {/* NOTE(VI): Lý do: Bỏ text "Tự cập nhật theo tất cả khoản chi và lần trả." và bỏ text "Cần trả/Sẽ nhận" ở panel Số dư hiện tại trang Khoản chi
+      Trước: Có thẻ <p> phụ đề và thẻ <small> ghi Cần trả / Sẽ nhận
+      Sau: Bỏ thẻ <p> và <small>, chỉ giữ avatar, tên và số tiền (+/-)
+      Test: Vào tab Khoản chi -> Panel Số dư hiện tại gọn sạch, không còn text phụ và nhãn cần trả/sẽ nhận */}
   return <section className="settlement-layout current-money-overview">
     <div className="panel balance-panel">
-      <div className="panel-heading"><div><h2>Số dư hiện tại</h2><p>Tự cập nhật theo tất cả khoản chi và lần trả.</p></div></div>
-      <div className="balance-list">{members.length ? members.map((member, index) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={index} /><span className="person-info"><strong>{member.name}</strong><small>{amount > 0 ? 'Sẽ nhận' : amount < 0 ? 'Cần trả' : 'Cân bằng'}</small></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div> }) : <div className="empty-state compact"><p>Chưa có thành viên phát sinh chi tiêu hoặc trả tiền.</p></div>}</div>
+      <div className="panel-heading"><div><h2>Số dư hiện tại</h2></div></div>
+      <div className="balance-list">{members.length ? members.map((member, index) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={index} /><span className="person-info"><strong>{member.name}</strong></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div> }) : <div className="empty-state compact"><p>Chưa có thành viên phát sinh chi tiêu hoặc trả tiền.</p></div>}</div>
     </div>
 
   </section>
@@ -811,7 +831,17 @@ function SettlementSuggestionsPanel({ suggestions, members, onRecord, inline = f
       const to = members.find((member) => member.id === suggestion.toMemberId)
       if (!from || !to) return null
       return <div className="suggestion-row" key={`${from.id}-${to.id}`}>
-        <div className="suggestion-people"><MemberAvatar member={from} index={members.indexOf(from)} /><div><strong>{from.name} <span>chuyển cho</span> {to.name}</strong></div><MemberAvatar member={to} index={members.indexOf(to)} /></div>
+        {/* NOTE(VI): Lý do: Đổi "chuyển cho" thành "trả" và đặt icon avatar người nhận ngay trước tên người nhận
+            Trước: (Avatar from) Kha chuyển cho Thương (Avatar to ở cuối)
+            Sau: (Avatar from) Kha trả (Avatar to) Thương
+            Test: Vào tab Quyết toán -> Kiểm tra mục Gợi ý chuyển tiền: hiển thị icon người chuyển, tên, chữ "trả", icon người nhận, tên người nhận */}
+        <div className="suggestion-people">
+          <MemberAvatar member={from} index={members.indexOf(from)} />
+          <span className="suggestion-name">{from.name}</span>
+          <span className="suggestion-verb">trả</span>
+          <MemberAvatar member={to} index={members.indexOf(to)} />
+          <span className="suggestion-name">{to.name}</span>
+        </div>
         <strong>{money(suggestion.amount)}</strong>
         <button className="button small-button" onClick={() => onRecord(from.id, to.id, suggestion.amount)}><Check size={14} /> Đã trả</button>
       </div>
