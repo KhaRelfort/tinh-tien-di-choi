@@ -1071,6 +1071,9 @@ function AccountModal({
       )}
     </section>
     {cloudEnabled && <button className="account-logout" onClick={onLogout}><LogOut size={16} /> Đăng xuất</button>}
+    <div style={{ textAlign: 'center', marginTop: 12, fontSize: 10, color: '#90968e' }}>
+      Phiên bản app: v{__APP_VERSION__}
+    </div>
     {previewAvatar && (
       <div className="avatar-lightbox-backdrop" onClick={() => setPreviewAvatar(null)}>
         <div className="avatar-lightbox-card" onClick={(e) => e.stopPropagation()}>

@@ -32,6 +32,64 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode><AppErrorBoundary><App /></AppErrorBoundary></React.StrictMode>,
 )
 
+// NOTE(VI): Lý do: Tự động phát hiện phiên bản mới từ version.js để update tính năng mới trên thiết bị người dùng.
+// Trước: Không có cơ chế đối chiếu mã version, người dùng phải tự xóa cache hoặc chờ trình duyệt cập nhật.
+// Sau: Định kỳ kiểm tra file /version.js, nếu thấy mã version trên server khác version của máy thì tự nạp bản mới.
+// Test: Đổi mã APP_VERSION trong version.js -> deploy -> thiết bị đang mở app sẽ tự reload lên bản mới.
+function initVersionWatcher() {
+  if (typeof window === 'undefined') return
+
+  let isUpdating = false
+  async function checkForUpdate() {
+    if (isUpdating) return
+    try {
+      const response = await fetch(`/version.js?_t=${Date.now()}`, { cache: 'no-store' })
+      if (!response.ok) return
+      const text = await response.text()
+      const match = text.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/)
+      const latestVersion = match?.[1]
+
+      if (latestVersion && latestVersion !== __APP_VERSION__) {
+        isUpdating = true
+        console.log(`[Update] Phát hiện phiên bản mới: v${latestVersion} (hiện tại v${__APP_VERSION__}). Đang tự động cập nhật...`)
+        
+        if ('serviceWorker' in navigator) {
+          const registrations = await navigator.serviceWorker.getRegistrations()
+          for (const reg of registrations) {
+            await reg.update()
+          }
+        }
+        
+        window.location.reload()
+      }
+    } catch {
+      // Bỏ qua lỗi kết nối tạm thời khi offline
+    }
+  }
+
+  // 1. Kiểm tra 2s sau khi mở app
+  window.addEventListener('load', () => {
+    setTimeout(checkForUpdate, 2000)
+  })
+
+  // 2. Kiểm tra khi người dùng mở lại app / active tab
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      void checkForUpdate()
+    }
+  })
+
+  // 3. Kiểm tra khi có mạng trở lại
+  window.addEventListener('online', () => {
+    void checkForUpdate()
+  })
+
+  // 4. Định kỳ kiểm tra mỗi 60 giây khi app đang chạy
+  setInterval(checkForUpdate, 60000)
+}
+
+initVersionWatcher()
+
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     void navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' })
