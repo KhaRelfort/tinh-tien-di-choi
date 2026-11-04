@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import {
   ArrowLeftRight, ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
   Camera, CircleHelp, Cloud, CloudOff, Coffee, Copy, Filter, LogOut, Printer, UserRound,
-  Plus, ReceiptText, Settings2, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
+  Plus, ReceiptText, RefreshCw, Settings2, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
   Wallet, X,
 } from 'lucide-react'
 import {
@@ -870,9 +870,48 @@ function AccountModal({
   const [savingMember, setSavingMember] = useState(false)
   const [memberError, setMemberError] = useState('')
   const [previewAvatar, setPreviewAvatar] = useState<{ url?: string | null; name: string; color?: string; initial?: string } | null>(null)
+  const [checkingVersion, setCheckingVersion] = useState(false)
+  const [versionStatus, setVersionStatus] = useState<'idle' | 'checking' | 'latest' | 'has_update' | 'error'>('idle')
+  const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const ownerFileInputRef = useRef<HTMLInputElement>(null)
   const memberFileInputRef = useRef<HTMLInputElement>(null)
   const targetMemberIdRef = useRef<string | null>(null)
+
+  async function handleCheckVersion() {
+    setCheckingVersion(true)
+    setVersionStatus('checking')
+    try {
+      const res = await fetch(`/version.js?_t=${Date.now()}`, { cache: 'no-store' })
+      if (!res.ok) throw new Error('Không thể kết nối đến server kiểm tra phiên bản.')
+      const text = await res.text()
+      const match = text.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/)
+      const latest = match?.[1]
+      if (latest) {
+        setLatestVersion(latest)
+        if (latest !== __APP_VERSION__) {
+          setVersionStatus('has_update')
+        } else {
+          setVersionStatus('latest')
+        }
+      } else {
+        setVersionStatus('latest')
+      }
+    } catch {
+      setVersionStatus('error')
+    } finally {
+      setCheckingVersion(false)
+    }
+  }
+
+  async function handleApplyUpdate() {
+    if ('serviceWorker' in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations()
+      for (const reg of registrations) {
+        await reg.update()
+      }
+    }
+    window.location.reload()
+  }
 
   async function handleOwnerAvatarFile(file: File) {
     setMemberError('')
@@ -1070,10 +1109,59 @@ function AccountModal({
         </form>
       )}
     </section>
+    {/* NOTE(VI): Lý do: Bổ sung mục "Thông tin phiên bản" có nút kiểm tra bản mới và cập nhật
+        Trước: Chỉ có 1 dòng text nhỏ hiển thị số phiên bản
+        Sau: Section đầy đủ hiển thị số bản hiện tại, nút "Kiểm tra bản mới", thông báo trạng thái và nút "Cập nhật ngay" nếu có bản mới
+        Test: Mở modal Tài khoản -> Bấm "Kiểm tra bản mới" -> Hiện thông báo kiểm tra hoặc nút Cập nhật ngay */}
+    <section className="account-version-info">
+      <div className="account-version-header">
+        <div>
+          <span className="account-version-title">Thông tin phiên bản</span>
+          <div className="account-version-number">
+            Bản hiện tại: <strong>v{__APP_VERSION__}</strong>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="button secondary version-check-btn"
+          disabled={checkingVersion}
+          onClick={() => void handleCheckVersion()}
+          title="Kiểm tra xem có phiên bản mới không"
+        >
+          <RefreshCw size={13} className={checkingVersion ? 'spin' : ''} />
+          {checkingVersion ? 'Đang kiểm tra...' : 'Kiểm tra bản mới'}
+        </button>
+      </div>
+
+      {versionStatus === 'latest' && (
+        <div className="version-status-msg success">
+          <Check size={14} /> Bạn đang dùng phiên bản mới nhất!
+        </div>
+      )}
+
+      {versionStatus === 'has_update' && (
+        <div className="version-update-card">
+          <div className="version-update-text">
+            <Sparkles size={14} color="#e6a448" />
+            <span>Đã có phiên bản mới: <strong>v{latestVersion}</strong></span>
+          </div>
+          <button
+            type="button"
+            className="button primary version-update-btn"
+            onClick={() => void handleApplyUpdate()}
+          >
+            Cập nhật ngay
+          </button>
+        </div>
+      )}
+
+      {versionStatus === 'error' && (
+        <div className="version-status-msg error">
+          Không thể kiểm tra bản mới. Vui lòng thử lại sau.
+        </div>
+      )}
+    </section>
     {cloudEnabled && <button className="account-logout" onClick={onLogout}><LogOut size={16} /> Đăng xuất</button>}
-    <div style={{ textAlign: 'center', marginTop: 12, fontSize: 10, color: '#90968e' }}>
-      Phiên bản app: v{__APP_VERSION__}
-    </div>
     {previewAvatar && (
       <div className="avatar-lightbox-backdrop" onClick={() => setPreviewAvatar(null)}>
         <div className="avatar-lightbox-card" onClick={(e) => e.stopPropagation()}>

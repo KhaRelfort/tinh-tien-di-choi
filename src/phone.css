@@ -1,4 +1,4 @@
-﻿html,body,#root{min-height:100%;width:100%}
+html,body,#root{min-height:100%;width:100%}
 body{background:#e8e9e4}
 .app-shell{position:relative;width:100%;max-width:430px;min-height:100vh;min-height:100dvh;margin:0 auto;padding-top:env(safe-area-inset-top,0px);overflow-x:hidden;background:#f6f5f1;box-shadow:0 0 50px #1f2e1d14}
 .sidebar{display:none!important}
@@ -242,6 +242,21 @@ body{background:#e8e9e4}
    Trước: Nút co giãn theo độ dài text ("Thêm khoản chi" ngắn hơn "Ghi nhận trả tiền") nên mép trái bị lệch khi đổi tab.
    Sau: Đặt kích thước cố định width: 148px, căn giữa nội dung, giữ nguyên vị trí góc phải tuyệt đối.
    Test: Bấm chuyển qua lại giữa 2 tab "Khoản chi" và "Quyết toán", nút đứng yên tại chỗ không lệch 1 pixel nào, chỉ đổi text bên trong. */
+.account-version-info{display:grid;gap:10px;padding:12px;margin-bottom:14px;border:1px solid #eeeee8;border-radius:11px;background:#fafbf8}
+.account-version-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.account-version-title{display:block;font-size:11px;font-weight:700;color:#90968e}
+.account-version-number{font-size:12px;color:#555e56;margin-top:2px}
+.account-version-number strong{color:var(--green);font-weight:700}
+.version-check-btn{height:30px;padding:0 10px;font-size:11px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.version-status-msg{display:flex;align-items:center;gap:6px;font-size:11.5px;padding:7px 10px;border-radius:7px}
+.version-status-msg.success{background:#eef7f1;color:#237b58}
+.version-status-msg.error{background:#fdf1ef;color:#ba5748}
+.version-update-card{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border-radius:8px;background:#fdfaf2;border:1px solid #f2e2be}
+.version-update-text{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#795d28}
+.version-update-btn{height:30px;padding:0 11px;font-size:11px;white-space:nowrap}
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
 .floating-add-expense{position:fixed;z-index:40;right:max(16px,calc((100vw - 430px)/2 + 16px));bottom:calc(66px + env(safe-area-inset-bottom,0px));height:38px;width:148px;padding:0 12px;border-radius:19px;display:inline-flex;align-items:center;justify-content:center;gap:6px;box-shadow:0 4px 14px #176b4a35;white-space:nowrap;font-size:11px;font-weight:700}
 .floating-add-expense svg{width:18px;height:18px;flex:0 0 auto}
 .floating-add-expense span{font-size:11px;font-weight:700;letter-spacing:-.2px}
