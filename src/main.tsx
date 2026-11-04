@@ -21,10 +21,11 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, { error:
   }
 }
 
+// NOTE(VI): Lý do: Gỡ bỏ Service Worker khi chạy local dev để tránh cache làm phiền.
+// Lưu ý: Không được gọi window.location.reload() ở đây vì sẽ gây vòng lặp reload vô tận ở localhost!
 if (import.meta.env.DEV && 'serviceWorker' in navigator) {
   void navigator.serviceWorker.getRegistrations().then(async (registrations) => {
-    const removed = await Promise.all(registrations.map((registration) => registration.unregister()))
-    if (removed.some(Boolean)) window.location.reload()
+    await Promise.all(registrations.map((registration) => registration.unregister()))
   })
 }
 
@@ -33,9 +34,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 )
 
 // NOTE(VI): Lý do: Tự động phát hiện phiên bản mới từ version.js để update tính năng mới trên thiết bị người dùng.
-// Trước: Không có cơ chế đối chiếu mã version, người dùng phải tự xóa cache hoặc chờ trình duyệt cập nhật.
-// Sau: Định kỳ kiểm tra file /version.js, nếu thấy mã version trên server khác version của máy thì tự nạp bản mới.
-// Test: Đổi mã APP_VERSION trong version.js -> deploy -> thiết bị đang mở app sẽ tự reload lên bản mới.
+// Lưu ý: Chỉ kích hoạt trên môi trường PROD (bản build / deploy thật). Không chạy ở localhost dev để không xung đột với Vite HMR.
 function initVersionWatcher() {
   if (typeof window === 'undefined') return
 
@@ -88,7 +87,9 @@ function initVersionWatcher() {
   setInterval(checkForUpdate, 60000)
 }
 
-initVersionWatcher()
+if (import.meta.env.PROD) {
+  initVersionWatcher()
+}
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {

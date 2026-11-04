@@ -4,7 +4,7 @@
 // bạn chỉ cần đổi số version ở dòng dưới rồi đẩy lên GitHub!
 // Ví dụ: '1.0.1', '1.0.2', '1.1.0', '2.0.0'...
 // ====================================================================
-export const APP_VERSION = '1.0.2';
+export const APP_VERSION = '1.0.4';
 
 if (typeof window !== 'undefined') {
   window.__APP_VERSION__ = APP_VERSION;
@@ -12,4 +12,3 @@ if (typeof window !== 'undefined') {
 if (typeof self !== 'undefined') {
   self.__APP_VERSION__ = APP_VERSION;
 }
-
