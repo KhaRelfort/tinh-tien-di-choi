@@ -29,6 +29,16 @@ if (import.meta.env.DEV && 'serviceWorker' in navigator) {
   })
 }
 
+// NOTE(VI): Lý do: Tự động dọn sạch query param ?_reload=... trên URL sau khi vừa reload để thanh địa chỉ sạch đẹp
+// Trước: Link giữ nguyên ?_reload=1793899... trên thanh địa chỉ
+// Sau: Trả URL về trang chủ sạch sẽ sau khi trang đã nạp xong
+// Test: Bấm cập nhật -> Trang reload -> URL hiển thị http://localhost:5173/ sạch sẽ
+if (typeof window !== 'undefined' && window.location.search.includes('_reload=')) {
+  const cleanSearch = window.location.search.replace(/[?&]_reload=\d+/, '').replace(/^&/, '?')
+  const cleanUrl = window.location.pathname + (cleanSearch ? cleanSearch : '') + window.location.hash
+  window.history.replaceState({}, document.title, cleanUrl || '/')
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode><AppErrorBoundary><App /></AppErrorBoundary></React.StrictMode>,
 )
@@ -47,19 +57,25 @@ function initVersionWatcher() {
       const text = await response.text()
       const match = text.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/)
       const latestVersion = match?.[1]
+      const currentVersion = (typeof window !== 'undefined' && (window as any).__APP_VERSION__) || (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0')
 
-      if (latestVersion && latestVersion !== __APP_VERSION__) {
+      if (latestVersion && latestVersion !== currentVersion) {
         isUpdating = true
-        console.log(`[Update] Phát hiện phiên bản mới: v${latestVersion} (hiện tại v${__APP_VERSION__}). Đang tự động cập nhật...`)
+        console.log(`[Update] Phát hiện phiên bản mới: v${latestVersion} (hiện tại v${currentVersion}). Đang tự động cập nhật...`)
         
-        if ('serviceWorker' in navigator) {
-          const registrations = await navigator.serviceWorker.getRegistrations()
-          for (const reg of registrations) {
-            await reg.update()
+        try {
+          if ('caches' in window) {
+            const cacheKeys = await caches.keys()
+            await Promise.all(cacheKeys.map((key) => caches.delete(key)))
           }
-        }
+          if ('serviceWorker' in navigator) {
+            const registrations = await navigator.serviceWorker.getRegistrations()
+            await Promise.all(registrations.map((reg) => reg.unregister()))
+          }
+        } catch {}
         
-        window.location.reload()
+        const cleanUrl = window.location.origin + window.location.pathname
+        window.location.replace(`${cleanUrl}?_reload=${Date.now()}`)
       }
     } catch {
       // Bỏ qua lỗi kết nối tạm thời khi offline

@@ -88,7 +88,11 @@ export function normalizeLedger(ledger: Ledger): Ledger {
     ? { ...period, status: 'settled', settledAt: period.endDate ?? period.settledAt ?? today() }
     : period) }
   const startDate = ledger.expenses.map((expense) => expense.date).sort()[0] ?? today()
-  const period: SettlementPeriod = { id: `legacy-period-${ledger.id}`, startDate, endDate: null, status: 'open', settledAt: null }
+  // NOTE(VI): Lý do: Dùng makeId() (crypto.randomUUID()) thay vì 'legacy-period-...' để đảm bảo id luôn là UUID hợp lệ, không gây lỗi cú pháp UUID trong PostgreSQL khi sync lên Supabase.
+  // Trước: const period: SettlementPeriod = { id: `legacy-period-${ledger.id}`, startDate, endDate: null, status: 'open', settledAt: null }
+  // Sau: const period: SettlementPeriod = { id: makeId(), startDate, endDate: null, status: 'open', settledAt: null }
+  // Test: Chốt kỳ hoặc sync kỳ lên Supabase không bị lỗi "invalid input syntax for type uuid"
+  const period: SettlementPeriod = { id: makeId(), startDate, endDate: null, status: 'open', settledAt: null }
   return {
     ...ledger,
     periods: [period],

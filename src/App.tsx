@@ -9,7 +9,7 @@ import {
   equalSplits, getBalances, getUnpaidTotal, makeDemoLedger, makeId, memberColor, money, normalizeLedger,
   markClosedPeriodsSettled, suggestSettlements, today, type Expense, type Ledger, type Member, type Operation, type Settlement, type SettlementPeriod,
 } from './domain'
-import { queueOperation, readLedger, readQueue, removeOperation, replaceOperation, writeLedger } from './lib/localStore'
+import { clearQueue, queueOperation, readLedger, readQueue, removeOperation, replaceOperation, writeLedger } from './lib/localStore'
 import {
   fetchCloudLedger, fetchMonthlyExpenseTotals, initializeCloudLedger, isCloudConfigured, signIn, signOut, signUp, supabase, syncOperation,
 } from './lib/supabase'
@@ -18,7 +18,6 @@ type Page = 'expenses' | 'settlements'
 const categories = ['Khác', 'Ăn uống', 'Di chuyển', 'Lưu trú', 'Vé tham quan', 'Mua sắm']
 const categoryIcon = (category: string) => category === 'Ăn uống' ? Utensils : category === 'Di chuyển' ? ArrowLeftRight : Coffee
 const formatDate = (date: string) => new Intl.DateTimeFormat('vi-VN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date(`${date}T12:00:00`))
-const nextDate = (date: string) => { const [year, month, day] = date.split('-').map(Number); return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10) }
 const sumExpenseMonths = (expenses: Expense[]) => expenses.reduce<Record<string, number>>((totals, expense) => {
   const month = expense.date.slice(0, 7)
   totals[month] = (totals[month] ?? 0) + expense.amount
@@ -91,6 +90,11 @@ export default function App() {
   const [modal, setModal] = useState<'expense' | 'settlement' | 'confirm_settlement' | null>(null)
   const [pendingSettlement, setPendingSettlement] = useState<{ fromMemberId: string; toMemberId: string; amount: number; periodId: string } | null>(null)
   const [pendingSettlementDelete, setPendingSettlementDelete] = useState<Settlement | null>(null)
+  // NOTE(VI): Lý do: Bổ sung popup xác nhận trước khi chốt kỳ để tránh bấm nhầm
+  // Trước: Bấm Chốt kỳ lập tức chốt luôn không hỏi lại
+  // Sau: Hiện popup xác nhận, người dùng bấm "Xác nhận chốt kỳ" mới tiến hành chốt
+  // Test: Vào menu Quyết toán -> Bấm Chốt kỳ -> Hiện popup hỏi -> Bấm Quay lại thì đóng popup -> Bấm Xác nhận chốt kỳ thì thực hiện chốt
+  const [showClosePeriodConfirm, setShowClosePeriodConfirm] = useState(false)
   const [settlementHistoryPage, setSettlementHistoryPage] = useState(1)
   const [showSettlementFilters, setShowSettlementFilters] = useState(false)
   const [showSettlementHistory, setShowSettlementHistory] = useState(false)
@@ -102,6 +106,17 @@ export default function App() {
   const monthlyChartRef = useRef<HTMLDivElement>(null)
   const [showSavedStatus, setShowSavedStatus] = useState(false)
   const savedStatusTimerRef = useRef<number | null>(null)
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const toastTimerRef = useRef<number | null>(null)
+
+  const showToast = useCallback((message: string) => {
+    setToastMessage(message)
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage(null)
+      toastTimerRef.current = null
+    }, 2800)
+  }, [])
   const [expenseFilters, setExpenseFilters] = useState({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '' })
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingCount, setPendingCount] = useState(0)
@@ -142,6 +157,7 @@ export default function App() {
 
   useEffect(() => () => {
     if (savedStatusTimerRef.current !== null) window.clearTimeout(savedStatusTimerRef.current)
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
   }, [])
 
   const hydrate = useCallback(async (cloud = false) => {
@@ -213,19 +229,43 @@ export default function App() {
     try {
       for (const operation of queue) {
         currentOperation = operation
-        await syncOperation(operation)
-        await removeOperation(operation.opId)
+        try {
+          await syncOperation(operation)
+          await removeOperation(operation.opId)
+        } catch (opErr: any) {
+          const opMsg = String(opErr?.message || opErr || '').toLowerCase()
+          // NOTE(VI): Lý do: Chỉ xóa thao tác chốt kỳ nếu kỳ đó thực sự đã được chốt từ trước trên server (period cannot be closed).
+          // Tuyệt đối không được nuốt lỗi settlement_period_one_open_per_group vì nếu xóa thao tác thì fetchCloudLedger sẽ lấy dữ liệu cũ chưa chốt đè lên máy người dùng.
+          // Trước: Xóa thao tác khi gặp settlement_period_one_open_per_group -> làm mất kỳ chốt cục bộ và bị server đè lại dữ liệu cũ ngày 4
+          // Sau: Giữ nguyên thao tác, throw lỗi cụ thể để bảo vệ dữ liệu cục bộ không bị đè và hướng dẫn người dùng cập nhật SQL trên Supabase
+          // Test: Bấm chốt kỳ khi Supabase chưa cập nhật SQL -> Dữ liệu kỳ mới và dấu ĐÃ THANH TOÁN được giữ nguyên, không bị giật lùi về ngày 4
+          if (operation.kind === 'period_close' && opMsg.includes('period cannot be closed')) {
+            await removeOperation(operation.opId)
+            continue
+          }
+          if (opMsg.includes('settlement_period_one_open_per_group')) {
+            throw new Error('Supabase cần cập nhật hàm chốt kỳ. Vui lòng mở Supabase SQL Editor và chạy file migration mới nhất')
+          }
+          throw opErr
+        }
       }
       const fresh = await fetchCloudLedger()
       setLedger(fresh); await writeLedger(fresh)
       await refreshMonthlyTotals()
       setPendingCount(0); setSyncNotice(''); flashSavedStatus()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Không thể đồng bộ lúc này.'
+    } catch (error: any) {
+      // NOTE(VI): Lý do: Lấy chính xác thông điệp lỗi từ Supabase/PostgreSQL thay vì gán cứng 'Không thể đồng bộ lúc này' khi error không phải instanceof Error
+      // Trước: const message = error instanceof Error ? error.message : 'Không thể đồng bộ lúc này.'
+      // Sau: Lấy message từ error object và bỏ dấu chấm thừa
+      // Test: Khi có lỗi đồng bộ, banner hiển thị rõ lý do cụ thể
+      const rawMsg = error instanceof Error ? error.message : (error?.message || error?.details || 'Không thể đồng bộ lúc này')
+      const message = String(rawMsg).replace(/\.+$/, '')
       if (message.toLowerCase().includes('conflict') || message.toLowerCase().includes('changed')) {
         setConflictOperation(currentOperation)
         setSyncNotice('Sổ đã thay đổi trên thiết bị khác. Chọn cách xử lý trước khi tiếp tục đồng bộ.')
-      } else setSyncNotice(isOnline ? `L\u1ed7i \u0111\u1ed3ng b\u1ed9: ${message}. D\u1eef li\u1ec7u v\u1eabn \u0111\u01b0\u1ee3c l\u01b0u tr\u00ean thi\u1ebft b\u1ecb.` : 'Đang offline. Thay đổi vẫn được lưu trên thiết bị và sẽ đồng bộ khi có mạng.')
+      } else {
+        setSyncNotice(isOnline ? `Lỗi đồng bộ: ${message}. Dữ liệu vẫn được lưu trên thiết bị.` : 'Đang offline. Thay đổi vẫn được lưu trên thiết bị và sẽ đồng bộ khi có mạng.')
+      }
     } finally { syncingRef.current = false; setSyncing(false); setPendingCount((await readQueue()).length) }
   }, [conflictOperation, flashSavedStatus, isOnline, refreshMonthlyTotals, session])
 
@@ -256,6 +296,19 @@ export default function App() {
       setPendingCount(queue.length)
       if (!queue.length) flashSavedStatus()
     } catch (error) { setSyncNotice(error instanceof Error ? error.message : 'Không tải được dữ liệu mới nhất.') }
+  }
+
+  // NOTE(VI): Lý do: Thêm hàm giải phóng hàng đợi bị kẹt khi thao tác không thể đồng bộ lên máy chủ, cho phép người dùng khôi phục trạng thái chuẩn từ cloud.
+  // Trước: Nếu thao tác trong queue bị server từ chối, queue bị kẹt vĩnh viễn không thể sync tiếp
+  // Sau: Cung cấp tùy chọn hủy hàng đợi kẹt và tải lại dữ liệu mới nhất từ máy chủ
+  // Test: Bấm nút "Xóa hàng đợi" trên banner lỗi -> hàng đợi được dọn sạch, tải lại snapshot từ cloud
+  async function discardPendingQueue() {
+    if (!confirm('Bỏ qua các thay đổi chưa đồng bộ bị kẹt và tải lại dữ liệu mới nhất từ máy chủ?')) return
+    await clearQueue()
+    setPendingCount(0)
+    setConflictOperation(null)
+    setSyncNotice('')
+    await hydrate(true)
   }
 
   async function commitOperation(operation: Operation, update: (current: Ledger) => Ledger) {
@@ -329,7 +382,11 @@ export default function App() {
     if (settlementFilters.memberId && settlement.fromMemberId !== settlementFilters.memberId && settlement.toMemberId !== settlementFilters.memberId) return false
     return true
   })
-  const orderedSettlements = [...filteredSettlements].sort((a, b) => b.date.localeCompare(a.date))
+  // NOTE(VI): Lý do: Sắp xếp khoản chuyển tiền thêm sau/mới nhất lên trên đầu (so sánh ngày desc, cùng ngày so sánh thời gian tạo updatedAt desc)
+  // Trước: const orderedSettlements = [...filteredSettlements].sort((a, b) => b.date.localeCompare(a.date))
+  // Sau: const orderedSettlements = [...filteredSettlements].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
+  // Test: Ghi nhận trả tiền mới -> khoản vừa thêm hiển thị ngay dòng đầu tiên của danh sách
+  const orderedSettlements = [...filteredSettlements].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
   const settlementPageCount = Math.max(1, Math.ceil(orderedSettlements.length / 15))
   const safeSettlementPage = Math.min(settlementHistoryPage, settlementPageCount)
   const visibleSettlements = orderedSettlements.slice((safeSettlementPage - 1) * 15, safeSettlementPage * 15)
@@ -368,11 +425,22 @@ export default function App() {
 
   async function saveExpense(expense: Expense, previous?: Expense) {
     if (!ledger) return
-    const periodId = expense.periodId ?? ledger.periods.find((period) => period.status === 'open')?.id ?? null
-    const record = { ...expense, periodId }
+    let openPeriod = ledger.periods.find((period) => period.status === 'open')
+    let nextPeriods = ledger.periods
+    if (!openPeriod) {
+      openPeriod = { id: makeId(), startDate: today(), endDate: null, status: 'open', settledAt: null }
+      nextPeriods = [...ledger.periods, openPeriod]
+    }
+    const periodId = expense.periodId ?? openPeriod.id
+    const record = { ...expense, periodId, updatedAt: new Date().toISOString() }
     const operation: Operation = { opId: makeId(), kind: 'expense_upsert', record, expectedUpdatedAt: previous?.updatedAt ?? null }
-    await commitOperation(operation, (current) => ({ ...current, expenses: previous ? current.expenses.map((item) => item.id === record.id ? record : item) : [record, ...current.expenses] }))
+    await commitOperation(operation, (current) => ({
+      ...current,
+      periods: nextPeriods,
+      expenses: previous ? current.expenses.map((item) => item.id === record.id ? record : item) : [record, ...current.expenses],
+    }))
     setModal(null); setEditing(null)
+    showToast(previous ? 'Đã lưu thay đổi khoản chi' : 'Thêm khoản chi thành công')
   }
 
   async function deleteExpense(expense: Expense) {
@@ -386,6 +454,7 @@ export default function App() {
     await commitOperation({ opId: makeId(), kind: 'settlement_upsert', record: settlement }, (current) =>
       markClosedPeriodsSettled({ ...current, settlements: [settlement, ...current.settlements] }))
     setSettlementHistoryPage(1)
+    showToast('Ghi nhận chuyển tiền thành công')
   }
 
   function requestSettlementConfirmation(fromMemberId: string, toMemberId: string, amount: number, periodId: string) {
@@ -410,10 +479,14 @@ export default function App() {
     setSettlementHistoryPage(1)
   }
 
+  // NOTE(VI): Lý do: Kỳ mới bắt đầu ngay hôm nay (endDate = today()) thay vì ngày mai (nextDate) để nếu trong ngày có chi tiêu tiếp theo thì tự động thuộc kỳ mới và có thể chốt tiếp nhiều lần trong cùng ngày
+  // Trước: startDate: nextDate(endDate) -> làm kỳ mới bắt đầu từ ngày mai, nếu chi tiêu chiều/tối hôm nay sẽ bị lệch ngày và không chốt được lần 2 trong ngày
+  // Sau: startDate: endDate (today())
+  // Test: Chốt kỳ trưa nay -> thêm khoản chi chiều nay -> chốt tiếp tối nay thành công 100%
   async function closeCurrentPeriod() {
     if (!selectedPeriod || selectedPeriod.status !== 'open') return
     const endDate = today()
-    const nextPeriod: SettlementPeriod = { id: makeId(), startDate: nextDate(endDate), endDate: null, status: 'open', settledAt: null }
+    const nextPeriod: SettlementPeriod = { id: makeId(), startDate: endDate, endDate: null, status: 'open', settledAt: null }
     const operation: Operation = { opId: makeId(), kind: 'period_close', periodId: selectedPeriod.id, endDate, nextPeriod }
     await commitOperation(operation, (current) => ({
       ...current,
@@ -421,6 +494,8 @@ export default function App() {
       expenses: current.expenses.map((expense) => expense.periodId === selectedPeriod.id && expense.date > endDate ? { ...expense, periodId: nextPeriod.id } : expense),
       settlements: current.settlements.map((settlement) => settlement.periodId === selectedPeriod.id && settlement.date > endDate ? { ...settlement, periodId: nextPeriod.id } : settlement),
     }))
+    setShowClosePeriodConfirm(false)
+    showToast('Chốt kỳ thành công')
   }
 
 
@@ -451,7 +526,7 @@ export default function App() {
         </div>
       </header>
       <div className="content">
-        {syncNotice && <div className={`sync-banner ${conflictOperation ? 'conflict-banner' : ''}`}><span>{syncNotice}</span>{conflictOperation && <div className="conflict-actions"><button onClick={() => void resolveConflict(false)}>Dùng bản mới</button><button onClick={() => void resolveConflict(true)}>Áp dụng thay đổi của tôi</button></div>}{!conflictOperation && pendingCount > 0 && <button className="sync-retry" disabled={syncing || !isOnline} onClick={() => void processQueue()}>{syncing ? 'Đang thử...' : 'Thử đồng bộ lại'}</button>}{!conflictOperation && <button aria-label="Đóng thông báo" onClick={() => setSyncNotice('')}><X size={15} /></button>}</div>}
+        {syncNotice && <div className={`sync-banner ${conflictOperation ? 'conflict-banner' : ''}`}><span>{syncNotice}</span>{conflictOperation && <div className="conflict-actions"><button onClick={() => void resolveConflict(false)}>Dùng bản mới</button><button onClick={() => void resolveConflict(true)}>Áp dụng thay đổi của tôi</button></div>}{!conflictOperation && pendingCount > 0 && <div className="sync-banner-actions"><button className="sync-retry" disabled={syncing || !isOnline} onClick={() => void processQueue()}>{syncing ? 'Đang thử...' : 'Thử đồng bộ lại'}</button><button className="sync-retry discard-queue-btn" disabled={syncing} title="Bỏ qua thao tác bị kẹt và tải lại từ máy chủ" onClick={() => void discardPendingQueue()}>Bỏ qua</button></div>}{!conflictOperation && <button aria-label="Đóng thông báo" onClick={() => setSyncNotice('')}><X size={15} /></button>}</div>}
         {!isCloudConfigured && <div className="local-banner"><CloudOff size={15} /><span>Đang dùng chế độ trên thiết bị. Kết nối Supabase để đồng bộ sổ giữa các máy.</span><button onClick={() => setSyncNotice('Sao chép .env.example thành .env.local, thêm URL và anon key trong Supabase, rồi chạy lại ứng dụng.')}>Cấu hình</button></div>}
         {/* NOTE(VI): Lý do: Bỏ text tiêu đề "Khoản chi" theo yêu cầu người dùng
             Trước: Có <div className="page-heading"><div><h1>Khoản chi</h1></div></div>
@@ -477,7 +552,11 @@ export default function App() {
               <label>Thành viên<select value={expenseFilters.memberId} onChange={(event) => setExpenseFilters({ ...expenseFilters, memberId: event.target.value })}><option value="">Tất cả thành viên</option>{ledger.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
               <label>Trạng thái<select value={expenseFilters.paymentStatus} onChange={(event) => setExpenseFilters({ ...expenseFilters, paymentStatus: event.target.value })}><option value="">Tất cả trạng thái</option><option value="unpaid">Chưa thanh toán</option><option value="paid">Đã chốt kỳ</option></select></label>
             </div><div className="filters-footer"><span>{filteredExpenses.length} khoản phù hợp</span><button disabled={activeFilterCount === 0} onClick={() => setExpenseFilters({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '' })}>Xóa bộ lọc</button></div></div>}
-            <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.'} />
+            {/* NOTE(VI): Lý do: Sắp xếp hóa đơn thêm sau đưa lên trên (ưu tiên ngày mới nhất desc, cùng ngày thì khoản nào thêm sau/cập nhật sau - updatedAt desc - sẽ xếp lên trên đầu).
+                Trước: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date))
+                Sau: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
+                Test: Thêm khoản chi mới -> khoản chi vừa thêm hiển thị ngay dòng trên cùng của Lịch sử chi tiêu */}
+            <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.'} />
           </section></>}
 
         {/* NOTE(VI): Lý do: Bỏ text tiêu đề "Quyết toán" theo yêu cầu người dùng
@@ -485,7 +564,7 @@ export default function App() {
             Sau: Bỏ heading, vào thẳng thanh kỳ hiện tại và số dư
             Test: Xem trang Quyết toán -> Tiêu đề to "Quyết toán" đã biến mất, giao diện thoáng và gọn */}
         {page === 'settlements' && <>
-          <section className="period-toolbar panel"><div className="period-current"><strong>Kỳ hiện tại</strong><span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span></div>{selectedPeriod?.status === 'open' && <button className="button primary" onClick={() => void closeCurrentPeriod()}><LockKeyhole size={15} /> Chốt kỳ</button>}</section>
+          <section className="period-toolbar panel"><div className="period-current"><strong>Kỳ hiện tại</strong><span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span></div>{selectedPeriod?.status === 'open' && <button className="button primary" onClick={() => setShowClosePeriodConfirm(true)}><LockKeyhole size={15} /> Chốt kỳ</button>}</section>
         {/* NOTE(VI): Lý do: Bỏ text phụ đề và chữ Cần trả/Sẽ nhận ở Số dư hiện tại trang Quyết toán theo yêu cầu
             Trước: Có text "Tính tất cả các khoản chưa thanh toán..." và tag <small>Cần trả / Sẽ nhận</small>
             Sau: Bỏ hẳn <p> và <small>, chỉ hiển thị tên và số tiền gọn gàng
@@ -655,9 +734,17 @@ export default function App() {
     </main>
 
     {modal === 'expense' && <ExpenseModal members={activeMembers} initial={editing} minDate={ledger.periods.find((period) => period.id === (editing?.periodId ?? ledger.periods.find((item) => item.status === 'open')?.id))?.startDate} onClose={() => { setModal(null); setEditing(null) }} onSave={(expense) => void saveExpense(expense, editing ?? undefined)} />}
-    {modal === 'settlement' && <SettlementModal members={activeMembers} suggestions={suggestions} onClose={() => setModal(null)} onSave={(from, to, amount, note) => void (async () => { const settlement: Settlement = { id: makeId(), fromMemberId: from, toMemberId: to, amount, date: today(), note, periodId: ledger.periods.find((period) => period.status === 'open')?.id ?? null, updatedAt: new Date().toISOString() }; await commitOperation({ opId: makeId(), kind: 'settlement_upsert', record: settlement }, (current) => markClosedPeriodsSettled({ ...current, settlements: [settlement, ...current.settlements] })); setSettlementHistoryPage(1); setModal(null) })()} />}
+    {modal === 'settlement' && <SettlementModal members={activeMembers} suggestions={suggestions} onClose={() => setModal(null)} onSave={(from, to, amount, note) => void (async () => { const settlement: Settlement = { id: makeId(), fromMemberId: from, toMemberId: to, amount, date: today(), note, periodId: ledger.periods.find((period) => period.status === 'open')?.id ?? null, updatedAt: new Date().toISOString() }; await commitOperation({ opId: makeId(), kind: 'settlement_upsert', record: settlement }, (current) => markClosedPeriodsSettled({ ...current, settlements: [settlement, ...current.settlements] })); setSettlementHistoryPage(1); setModal(null); showToast('Ghi nhận chuyển tiền thành công') })()} />}
     {modal === 'confirm_settlement' && pendingSettlement && <ConfirmSettlementModal from={ledger.members.find((member) => member.id === pendingSettlement.fromMemberId)?.name ?? 'Thành viên'} to={ledger.members.find((member) => member.id === pendingSettlement.toMemberId)?.name ?? 'Thành viên'} amount={pendingSettlement.amount} onClose={() => { setPendingSettlement(null); setModal(null) }} onConfirm={confirmPendingSettlement} />}
     {pendingSettlementDelete && <ConfirmDeleteSettlementModal from={ledger.members.find((member) => member.id === pendingSettlementDelete.fromMemberId)?.name ?? 'Thành viên'} to={ledger.members.find((member) => member.id === pendingSettlementDelete.toMemberId)?.name ?? 'Thành viên'} amount={pendingSettlementDelete.amount} onClose={() => setPendingSettlementDelete(null)} onConfirm={confirmDeleteSettlement} />}
+    {showClosePeriodConfirm && selectedPeriod && (
+      <ConfirmClosePeriodModal
+        startDate={selectedPeriod.startDate}
+        endDate={today()}
+        onClose={() => setShowClosePeriodConfirm(false)}
+        onConfirm={closeCurrentPeriod}
+      />
+    )}
     {showBillModal && <BillModal groupName={ledger.name} expenses={[...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))} members={ledger.members} onClose={() => setShowBillModal(false)} />}
     {showAccount && <AccountModal
       email={userEmail}
@@ -669,6 +756,7 @@ export default function App() {
       onAddMember={async (name) => {
         const newMember: Member = { id: makeId(), name, sortOrder: Math.max(-1, ...ledger.members.map((member) => member.sortOrder)) + 1, active: true }
         await updateMembers([...ledger.members, newMember], ledger.name)
+        showToast('Thêm thành viên thành công')
       }}
       onRenameMember={async (memberId, newName) => {
         const updatedMembers = ledger.members.map((member) => member.id === memberId ? { ...member, name: newName } : member)
@@ -705,7 +793,13 @@ export default function App() {
     >
       <Plus size={18} />
       <span>{page === 'expenses' ? 'Thêm khoản chi' : 'Ghi nhận trả tiền'}</span>
-    </button></>
+    </button>
+    {toastMessage && (
+      <div className="toast-notification" role="status" aria-live="polite">
+        <span className="toast-icon"><Check size={14} strokeWidth={2.8} /></span>
+        <span>{toastMessage}</span>
+      </div>
+    )}</>
 }
 
 function PaginationControls({ page, pageCount, total, onPageChange }: { page: number; pageCount: number; total: number; onPageChange: (page: number) => void }) {
@@ -867,6 +961,65 @@ function ConfirmDeleteSettlementModal({ from, to, amount, onClose, onConfirm }: 
   </Modal>
 }
 
+// NOTE(VI): Lý do: Rút gọn thông báo popup chốt kỳ ngắn gọn, rõ ràng theo yêu cầu người dùng
+// Trước: Chữ dài và bị dồn cục "Kỳ chi tiêu sẽ được đóng lại và mở kỳ mới từ ngày tiếp theo..."
+// Sau: Đúng format: Xác nhận chốt kỳ? / Kỳ chi tiêu sẽ được đóng lại và mở kỳ mới / Kỳ chốt này từ ngày x đến ngày y / Tất cả hóa đơn... / ĐÃ THANH TOÁN (xuống dòng riêng)
+// Test: Bấm Chốt kỳ -> Kiểm tra thông báo gọn gàng, rõ ràng, con dấu ĐÃ THANH TOÁN nổi bật ở dòng riêng
+function ConfirmClosePeriodModal({
+  startDate,
+  endDate,
+  onClose,
+  onConfirm,
+}: {
+  startDate: string
+  endDate: string
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const [closing, setClosing] = useState(false)
+  async function confirm() {
+    setClosing(true)
+    try {
+      await onConfirm()
+    } finally {
+      setClosing(false)
+    }
+  }
+  return (
+    <Modal
+      centered
+      eyebrow={null}
+      title="Xác nhận chốt kỳ?"
+      subtitle="Kỳ chi tiêu sẽ được đóng lại và mở kỳ mới."
+      onClose={onClose}
+    >
+      <div className="confirm-delete-content" style={{ gap: '10px', padding: '6px 0 16px' }}>
+        <p style={{ margin: 0, color: '#323b34', fontSize: '13px', fontWeight: 600 }}>
+          {startDate === endDate ? (
+            <>Kỳ chốt này ngày <b>{formatDate(startDate)}</b></>
+          ) : (
+            <>Kỳ chốt này từ <b>{formatDate(startDate)}</b> đến <b>{formatDate(endDate)}</b></>
+          )}
+        </p>
+        <div style={{ margin: '2px 0 0', color: '#687269', fontSize: '12.5px', lineHeight: 1.4 }}>
+          Tất cả hóa đơn trong kỳ này sẽ được chuyển thành
+        </div>
+        <div className="paid-stamp" style={{ transform: 'none', margin: '2px 0 0', padding: '3px 10px' }}>
+          <strong style={{ fontSize: '13px', letterSpacing: '0.6px', color: '#c32026' }}>ĐÃ THANH TOÁN</strong>
+        </div>
+      </div>
+      <div className="modal-actions">
+        <button type="button" className="button secondary" disabled={closing} onClick={onClose}>
+          Quay lại
+        </button>
+        <button type="button" className="button primary" disabled={closing} onClick={() => void confirm()}>
+          <LockKeyhole size={15} /> {closing ? 'Đang chốt...' : 'Xác nhận chốt kỳ'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 function AccountModal({
   email,
   cloudEnabled,
@@ -901,11 +1054,18 @@ function AccountModal({
   const [memberError, setMemberError] = useState('')
   const [previewAvatar, setPreviewAvatar] = useState<{ url?: string | null; name: string; color?: string; initial?: string } | null>(null)
   const [checkingVersion, setCheckingVersion] = useState(false)
+  const [updatingVersion, setUpdatingVersion] = useState(false)
   const [versionStatus, setVersionStatus] = useState<'idle' | 'checking' | 'latest' | 'has_update' | 'error'>('idle')
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const ownerFileInputRef = useRef<HTMLInputElement>(null)
   const memberFileInputRef = useRef<HTMLInputElement>(null)
   const targetMemberIdRef = useRef<string | null>(null)
+
+  // NOTE(VI): Lý do: Lấy phiên bản runtime từ window.__APP_VERSION__ (do version.js nạp vào) để ở localhost và prod luôn nhận đúng bản mới nhất mà không phụ thuộc vào việc restart process Vite
+  // Trước: Dùng __APP_VERSION__ cứng của Vite define -> khi đổi version.js ở localhost mà chưa restart Vite dev thì số phiên bản bị lệch
+  // Sau: Ưu tiên đọc window.__APP_VERSION__ runtime, fallback về __APP_VERSION__ compile-time
+  // Test: Sửa version.js -> reload -> bản hiện tại cập nhật ngay lập tức
+  const currentAppVersion = (typeof window !== 'undefined' && (window as any).__APP_VERSION__) || (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0')
 
   async function handleCheckVersion() {
     setCheckingVersion(true)
@@ -918,7 +1078,7 @@ function AccountModal({
       const latest = match?.[1]
       if (latest) {
         setLatestVersion(latest)
-        if (latest !== __APP_VERSION__) {
+        if (latest !== currentAppVersion) {
           setVersionStatus('has_update')
         } else {
           setVersionStatus('latest')
@@ -933,14 +1093,26 @@ function AccountModal({
     }
   }
 
+  // NOTE(VI): Lý do: Xóa sạch CacheStorage và unregister Service Worker cũ trước khi reload để ép browser tải mã nguồn mới nhất, tránh tình trạng iOS/Safari bị kẹt trong cache cũ
+  // Trước: Chỉ gọi reg.update() rồi window.location.reload() -> Safari vẫn phục vụ bundle cũ từ CacheStorage
+  // Sau: Xóa toàn bộ caches, unregister Service Worker, reload với query param _reload
+  // Test: Bấm "Cập nhật ngay" -> App hiện trạng thái Đang cập nhật, xóa cache và tải lại ngay bản mới
   async function handleApplyUpdate() {
-    if ('serviceWorker' in navigator) {
-      const registrations = await navigator.serviceWorker.getRegistrations()
-      for (const reg of registrations) {
-        await reg.update()
+    setUpdatingVersion(true)
+    try {
+      if ('caches' in window) {
+        const cacheKeys = await caches.keys()
+        await Promise.all(cacheKeys.map((key) => caches.delete(key)))
       }
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations()
+        await Promise.all(registrations.map((reg) => reg.unregister()))
+      }
+    } catch (e) {
+      console.warn('Lỗi khi xóa cache cập nhật:', e)
     }
-    window.location.reload()
+    const cleanUrl = window.location.origin + window.location.pathname
+    window.location.replace(`${cleanUrl}?_reload=${Date.now()}`)
   }
 
   async function handleOwnerAvatarFile(file: File) {
@@ -1148,7 +1320,7 @@ function AccountModal({
         <div>
           <span className="account-version-title">Thông tin phiên bản</span>
           <div className="account-version-number">
-            Bản hiện tại: <strong>v{__APP_VERSION__}</strong>
+            Bản hiện tại: <strong>v{currentAppVersion}</strong>
           </div>
         </div>
         <button
@@ -1178,9 +1350,11 @@ function AccountModal({
           <button
             type="button"
             className="button primary version-update-btn"
+            disabled={updatingVersion}
             onClick={() => void handleApplyUpdate()}
           >
-            Cập nhật ngay
+            <RefreshCw size={13} className={updatingVersion ? 'spin' : ''} />
+            {updatingVersion ? 'Đang cập nhật...' : 'Cập nhật ngay'}
           </button>
         </div>
       )}
