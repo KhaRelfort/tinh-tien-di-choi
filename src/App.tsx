@@ -135,7 +135,7 @@ export default function App() {
   const [cachedMonthlyTotals, setCachedMonthlyTotals] = useState<Record<string, number> | null>(null)
   const computedMonthlyTotals = useMemo(() => ledger ? sumExpenseMonths(ledger.expenses) : {}, [ledger?.expenses])
   const [page, setPage] = useState<Page>('expenses')
-  const [modal, setModal] = useState<'expense' | 'settlement' | 'confirm_settlement' | null>(null)
+  const [modal, setModal] = useState<'expense' | 'confirm_settlement' | null>(null)
   const [pendingSettlement, setPendingSettlement] = useState<{ fromMemberId: string; toMemberId: string; amount: number; periodId: string } | null>(null)
   const [pendingSettlementDelete, setPendingSettlementDelete] = useState<Settlement | null>(null)
   // NOTE(VI): Lý do: Bổ sung popup xác nhận trước khi chốt kỳ để tránh bấm nhầm
@@ -420,18 +420,11 @@ export default function App() {
   const selectedPeriod = ledger.periods.find((period) => period.status === 'open') ?? [...ledger.periods].sort((a, b) => b.startDate.localeCompare(a.startDate))[0]
   const activeMembers = ledger.members.filter((member) => member.active)
   const balances = getBalances(ledger)
-  const financiallyInvolved = new Set<string>()
-  for (const expense of ledger.expenses) {
-    financiallyInvolved.add(expense.payerId)
-    for (const split of expense.splits) if (split.amount > 0) financiallyInvolved.add(split.memberId)
-  }
-  for (const settlement of ledger.settlements) {
-    if (settlement.amount > 0) {
-      financiallyInvolved.add(settlement.fromMemberId)
-      financiallyInvolved.add(settlement.toMemberId)
-    }
-  }
-  const calculationMembers = activeMembers.filter((member) => financiallyInvolved.has(member.id))
+  // NOTE(VI): Lý do: Ẩn thành viên có số dư 0đ ở phần Số dư hiện tại theo yêu cầu người dùng
+  // Trước: calculationMembers lọc theo financiallyInvolved (ai từng chi tiêu/chia tiền thì luôn hiển thị kể cả khi số dư đã về 0đ)
+  // Sau: Chỉ hiển thị các thành viên có số dư khác 0 (balances.get(member.id) !== 0); thành viên có số dư 0đ sẽ tự động được ẩn
+  // Test: Thành viên chuyển tiền xong về 0đ -> lập tức ẩn khỏi Số dư hiện tại, chỉ hiện những ai còn nợ (-) hoặc cần nhận (+)
+  const calculationMembers = activeMembers.filter((member) => (balances.get(member.id) ?? 0) !== 0)
   const suggestions = suggestSettlements(ledger)
   const unpaidTotal = getUnpaidTotal(ledger)
   const periodSettlements = ledger.settlements
@@ -441,14 +434,18 @@ export default function App() {
     if (settlementFilters.memberId && settlement.fromMemberId !== settlementFilters.memberId && settlement.toMemberId !== settlementFilters.memberId) return false
     return true
   })
-  // NOTE(VI): Lý do: Sắp xếp khoản chuyển tiền thêm sau/mới nhất lên trên đầu (so sánh ngày desc, cùng ngày so sánh thời gian tạo updatedAt desc)
-  // Trước: const orderedSettlements = [...filteredSettlements].sort((a, b) => b.date.localeCompare(a.date))
-  // Sau: const orderedSettlements = [...filteredSettlements].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
-  // Test: Ghi nhận trả tiền mới -> khoản vừa thêm hiển thị ngay dòng đầu tiên của danh sách
+  // NOTE(VI): Lý do: Giới hạn lịch sử trả tiền mặc định chỉ hiển thị tối đa 2 trang (30 khoản). Nếu muốn xem nhiều hơn thì dùng bộ lọc
+  // Trước: Hiển thị toàn bộ tất cả các trang
+  // Sau: Khi không có bộ lọc (mặc định), chỉ hiển thị tối đa 2 trang; khi có bộ lọc thì hiển thị toàn bộ trang phù hợp
+  // Test: Danh sách trả tiền có trên 30 khoản -> chỉ lật được 2 trang; bấm Lọc theo ngày/thành viên -> lật được tất cả các trang của kết quả lọc
+  const hasSettlementFilter = Boolean(settlementFilters.fromDate || settlementFilters.toDate || settlementFilters.memberId)
   const orderedSettlements = [...filteredSettlements].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
-  const settlementPageCount = Math.max(1, Math.ceil(orderedSettlements.length / 15))
+  const displaySettlements = hasSettlementFilter ? orderedSettlements : orderedSettlements.slice(0, 30)
+  const settlementPageCount = hasSettlementFilter
+    ? Math.max(1, Math.ceil(orderedSettlements.length / 15))
+    : Math.min(2, Math.max(1, Math.ceil(orderedSettlements.length / 15)))
   const safeSettlementPage = Math.min(settlementHistoryPage, settlementPageCount)
-  const visibleSettlements = orderedSettlements.slice((safeSettlementPage - 1) * 15, safeSettlementPage * 15)
+  const visibleSettlements = displaySettlements.slice((safeSettlementPage - 1) * 15, safeSettlementPage * 15)
   const thisMonth = ledger.expenses.filter((expense) => expense.date.slice(0, 7) === today().slice(0, 7)).reduce((sum, expense) => sum + expense.amount, 0)
   const [currentYear, currentMonth] = today().split('-').map(Number)
   const monthlyExpenseTotals = Array.from({ length: 6 }, (_, index) => {
@@ -613,9 +610,10 @@ export default function App() {
     setModal('confirm_settlement')
   }
 
-  async function confirmPendingSettlement() {
+  async function confirmPendingSettlement(actualAmount?: number) {
     if (!pendingSettlement) return
-    await recordSettlement(pendingSettlement.fromMemberId, pendingSettlement.toMemberId, pendingSettlement.amount, pendingSettlement.periodId)
+    const finalAmount = actualAmount && actualAmount > 0 ? actualAmount : pendingSettlement.amount
+    await recordSettlement(pendingSettlement.fromMemberId, pendingSettlement.toMemberId, finalAmount, pendingSettlement.periodId)
     setPendingSettlement(null); setModal(null)
   }
 
@@ -734,12 +732,12 @@ export default function App() {
             Sau: Bỏ heading, vào thẳng thanh kỳ hiện tại và số dư
             Test: Xem trang Quyết toán -> Tiêu đề to "Quyết toán" đã biến mất, giao diện thoáng và gọn */}
         {page === 'settlements' && <>
-          <section className="period-toolbar panel"><div className="period-current"><strong>Kỳ hiện tại</strong><span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span></div>{selectedPeriod?.status === 'open' && <button className="button primary" onClick={() => setShowClosePeriodConfirm(true)}><LockKeyhole size={15} /> Chốt sổ</button>}</section>
+          <section className="period-toolbar panel"><div className="period-current"><strong>Kỳ hiện tại</strong><span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span></div></section>
         {/* NOTE(VI): Lý do: Bỏ text phụ đề và chữ Cần trả/Sẽ nhận ở Số dư hiện tại trang Quyết toán theo yêu cầu
             Trước: Có text "Tính tất cả các khoản chưa thanh toán..." và tag <small>Cần trả / Sẽ nhận</small>
             Sau: Bỏ hẳn <p> và <small>, chỉ hiển thị tên và số tiền gọn gàng
             Test: Vào tab Quyết toán -> Tiêu đề Số dư hiện tại gọn gàng, dòng thành viên chỉ hiển thị avatar, tên và số tiền */}
-        <section className="settlement-layout"><div className="panel balance-panel"><div className="panel-heading"><div><h2>Số dư hiện tại</h2></div></div><div className="balance-list">{calculationMembers.length ? calculationMembers.map((member, index) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={index} /><span className="person-info"><strong>{member.name}</strong></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div>}) : <div className="empty-state compact"><p>Chưa có thành viên phát sinh chi tiêu hoặc trả tiền.</p></div>}</div></div><SettlementSuggestionsPanel suggestions={suggestions} members={ledger.members} onRecord={(from, to, amount) => requestSettlementConfirmation(from, to, amount, ledger.periods.find((period) => period.status === 'open')?.id ?? '')} /></section>
+        <section className="settlement-layout"><div className="panel balance-panel"><div className="panel-heading"><div><h2>Số dư hiện tại</h2></div></div><div className="balance-list">{calculationMembers.length ? calculationMembers.map((member) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={ledger.members.indexOf(member)} /><span className="person-info"><strong>{member.name}</strong></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div>}) : <div className="empty-state compact"><p>{ledger.expenses.length ? 'Tất cả thành viên đã cân bằng số dư (0 đ).' : 'Chưa có thành viên phát sinh chi tiêu hoặc trả tiền.'}</p></div>}</div></div><SettlementSuggestionsPanel suggestions={suggestions} members={ledger.members} onRecord={(from, to, amount) => requestSettlementConfirmation(from, to, amount, ledger.periods.find((period) => period.status === 'open')?.id ?? '')} /></section>
           {/* NOTE(VI): Lý do: Ẩn bớt lịch sử trả tiền ở menu quyết toán cho gọn, bấm nút Xem/Thu gọn mới xổ xuống
               Trước: Lịch sử trả tiền luôn hiển thị đầy đủ làm trang bị dài
               Sau: Mặc định ẩn, có nút xổ xuống (ChevronDown) kèm số lượng lần trả tiền; bấm vào để bung ra hoặc thu gọn
@@ -751,14 +749,7 @@ export default function App() {
               onClick={() => setShowSettlementHistory((open) => !open)}
             >
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <h2>Lịch sử trả tiền</h2>
-                  {filteredSettlements.length > 0 && (
-                    <span className="filter-badge" title={`${filteredSettlements.length} khoản trả tiền`}>
-                      {filteredSettlements.length}
-                    </span>
-                  )}
-                </div>
+                <h2>Lịch sử trả tiền</h2>
                 <p>Các lần thành viên đã chuyển tiền cho nhau</p>
               </div>
               <div className="expense-panel-actions" onClick={(event) => event.stopPropagation()}>
@@ -769,7 +760,12 @@ export default function App() {
                     aria-expanded={showSettlementFilters}
                     onClick={() => setShowSettlementFilters((open) => !open)}
                   >
-                    <Filter size={14} /> Lọc
+                    <Filter size={14} /> <span>Lọc</span>
+                    {hasSettlementFilter && (
+                      <span className="filter-badge">
+                        {Object.values(settlementFilters).filter(Boolean).length}
+                      </span>
+                    )}
                   </button>
                 )}
                 <button
@@ -883,9 +879,14 @@ export default function App() {
                     <PaginationControls
                       page={safeSettlementPage}
                       pageCount={settlementPageCount}
-                      total={filteredSettlements.length}
+                      total={displaySettlements.length}
                       onPageChange={setSettlementHistoryPage}
                     />
+                    {!hasSettlementFilter && orderedSettlements.length > 30 && (
+                      <p style={{ textAlign: 'center', fontSize: '11.5px', color: '#666e66', margin: '8px 0 2px' }}>
+                        Hiển thị 2 trang gần nhất. Dùng bộ lọc để xem các khoản cũ hơn.
+                      </p>
+                    )}
                   </>
                 ) : (
                   <div className="empty-state compact">
@@ -904,7 +905,6 @@ export default function App() {
     </main>
 
     {modal === 'expense' && <ExpenseModal members={activeMembers} initial={editing} minDate={ledger.periods.find((period) => period.id === (editing?.periodId ?? ledger.periods.find((item) => item.status === 'open')?.id))?.startDate} onClose={() => { setModal(null); setEditing(null) }} onSave={(expense) => void saveExpense(expense, editing ?? undefined)} />}
-    {modal === 'settlement' && <SettlementModal members={activeMembers} suggestions={suggestions} onClose={() => setModal(null)} onSave={(from, to, amount, note) => void (async () => { const settlement: Settlement = { id: makeId(), fromMemberId: from, toMemberId: to, amount, date: today(), note, periodId: ledger.periods.find((period) => period.status === 'open')?.id ?? null, updatedAt: new Date().toISOString() }; await commitOperation({ opId: makeId(), kind: 'settlement_upsert', record: settlement }, (current) => markClosedPeriodsSettled({ ...current, settlements: [settlement, ...current.settlements] })); setSettlementHistoryPage(1); setModal(null); showToast('Ghi nhận chuyển tiền thành công') })()} />}
     {modal === 'confirm_settlement' && pendingSettlement && <ConfirmSettlementModal from={ledger.members.find((member) => member.id === pendingSettlement.fromMemberId)?.name ?? 'Thành viên'} to={ledger.members.find((member) => member.id === pendingSettlement.toMemberId)?.name ?? 'Thành viên'} amount={pendingSettlement.amount} onClose={() => { setPendingSettlement(null); setModal(null) }} onConfirm={confirmPendingSettlement} />}
     {pendingSettlementDelete && <ConfirmDeleteSettlementModal from={ledger.members.find((member) => member.id === pendingSettlementDelete.fromMemberId)?.name ?? 'Thành viên'} to={ledger.members.find((member) => member.id === pendingSettlementDelete.toMemberId)?.name ?? 'Thành viên'} amount={pendingSettlementDelete.amount} onClose={() => setPendingSettlementDelete(null)} onConfirm={confirmDeleteSettlement} />}
     {showClosePeriodConfirm && selectedPeriod && (
@@ -951,27 +951,36 @@ export default function App() {
     />}
     <nav className="mobile-nav">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={18} /><span>{label}</span></button>)}</nav>
   </div>
-    {/* NOTE(VI): Lý do: Dùng chung một cấu trúc button và UI CSS cho cả 2 tab Khoản chi và Quyết toán, chỉ khác text để chuyển qua lại không bị lệch nút
-        Trước: 2 button riêng biệt {page === 'expenses' && ...} {page === 'settlements' && ...}
-        Sau: 1 button duy nhất dùng chung class floating-add-expense, chỉ thay đổi text và onClick
-        Test: Bấm chuyển qua lại giữa menu Khoản chi và Quyết toán, nút đứng yên cố định ở góc phải, chỉ đổi chữ bên trong */}
-    <button
-      type="button"
-      className="button primary floating-add-expense"
-      aria-label={page === 'expenses' ? 'Thêm khoản chi' : 'Ghi nhận trả tiền'}
-      title={page === 'expenses' ? 'Thêm khoản chi' : 'Ghi nhận trả tiền'}
-      onClick={() => {
-        if (page === 'expenses') {
+    {/* NOTE(VI): Lý do: Xóa bỏ hoàn toàn nút ghi nhận trả tiền thủ công, đưa nút Chốt sổ xuống góc phải bên dưới thay thế
+        Trước: Tab Chốt sổ có nút nổi "+ Ghi nhận trả tiền" mở modal nhập tay thừa thãi
+        Sau: Tab Khoản chi có nút nổi "+ Thêm khoản chi"; Tab Chốt sổ có nút nổi "Chốt sổ" (kèm icon LockKeyhole)
+        Test: Vào tab Chốt sổ -> Nút nổi góc phải hiện "Chốt sổ"; bấm vào mở popup xác nhận chốt sổ */}
+    {page === 'expenses' ? (
+      <button
+        type="button"
+        className="button primary floating-add-expense"
+        aria-label="Thêm khoản chi"
+        title="Thêm khoản chi"
+        onClick={() => {
           setEditing(null)
           setModal('expense')
-        } else {
-          setModal('settlement')
-        }
-      }}
-    >
-      <Plus size={18} />
-      <span>{page === 'expenses' ? 'Thêm khoản chi' : 'Ghi nhận trả tiền'}</span>
-    </button>
+        }}
+      >
+        <Plus size={18} />
+        <span>Thêm khoản chi</span>
+      </button>
+    ) : selectedPeriod?.status === 'open' ? (
+      <button
+        type="button"
+        className="button primary floating-add-expense"
+        aria-label="Chốt sổ kỳ này"
+        title="Chốt sổ kỳ này"
+        onClick={() => setShowClosePeriodConfirm(true)}
+      >
+        <LockKeyhole size={17} />
+        <span>Chốt sổ kỳ này</span>
+      </button>
+    ) : null}
     {toastMessage && (
       <div className="toast-notification" role="status" aria-live="polite">
         <span className="toast-icon"><Check size={14} strokeWidth={2.8} /></span>
@@ -1115,14 +1124,14 @@ function ExpenseList({
 }
 
 function CurrentMoneyOverview({ members, balances }: { members: Member[]; balances: Map<string, number> }) {
-  {/* NOTE(VI): Lý do: Bỏ text "Tự cập nhật theo tất cả khoản chi và lần trả." và bỏ text "Cần trả/Sẽ nhận" ở panel Số dư hiện tại trang Khoản chi
-      Trước: Có thẻ <p> phụ đề và thẻ <small> ghi Cần trả / Sẽ nhận
-      Sau: Bỏ thẻ <p> và <small>, chỉ giữ avatar, tên và số tiền (+/-)
-      Test: Vào tab Khoản chi -> Panel Số dư hiện tại gọn sạch, không còn text phụ và nhãn cần trả/sẽ nhận */}
+  {/* NOTE(VI): Lý do: Bỏ text "Tự cập nhật theo tất cả khoản chi và lần trả." và bỏ text "Cần trả/Sẽ nhận" ở panel Số dư hiện tại; ẩn thành viên 0đ
+      Trước: Có thẻ <p> phụ đề và thẻ <small> ghi Cần trả / Sẽ nhận; thành viên 0đ vẫn hiển thị
+      Sau: Bỏ thẻ <p> và <small>, chỉ giữ avatar, tên và số tiền (+/-); thành viên 0đ được ẩn đi
+      Test: Vào tab Khoản chi -> Panel Số dư hiện tại gọn sạch, thành viên 0đ không hiển thị */}
   return <section className="settlement-layout current-money-overview">
     <div className="panel balance-panel">
       <div className="panel-heading"><div><h2>Số dư hiện tại</h2></div></div>
-      <div className="balance-list">{members.length ? members.map((member, index) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={index} /><span className="person-info"><strong>{member.name}</strong></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div> }) : <div className="empty-state compact"><p>Chưa có thành viên phát sinh chi tiêu hoặc trả tiền.</p></div>}</div>
+      <div className="balance-list">{members.length ? members.map((member, index) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={index} /><span className="person-info"><strong>{member.name}</strong></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div> }) : <div className="empty-state compact"><p>Tất cả thành viên đã cân bằng số dư (0 đ).</p></div>}</div>
     </div>
 
   </section>
@@ -1154,12 +1163,65 @@ function SettlementSuggestionsPanel({ suggestions, members, onRecord, inline = f
   </div>
 }
 
-function ConfirmSettlementModal({ from, to, amount, onClose, onConfirm }: { from: string; to: string; amount: number; onClose: () => void; onConfirm: () => Promise<void> }) {
+// NOTE(VI): Lý do: Đặt số tiền vào ô nhập (input) ngay từ đầu để người dùng có thể xác nhận ngay hoặc click thẳng vào ô sửa số tiền nếu trả thiếu/khác mức gợi ý, không cần nút bấm trung gian "Sửa số tiền"
+// Trước: Hiển thị text tĩnh kèm nút "Sửa số tiền" phải bấm mới hiện ô nhập
+// Sau: Ô input hiển thị sẵn số tiền gợi ý, cho phép sửa trực tiếp hoặc bấm "Xác nhận đã trả" ngay lập tức
+// Test: Bấm "Đã trả" ở gợi ý -> thấy ô số tiền hiển thị sẵn số tiền gợi ý; bấm thẳng "Xác nhận đã trả" -> lưu đúng số tiền; click vào ô sửa số khác -> lưu đúng số mới
+function ConfirmSettlementModal({ from, to, amount, onClose, onConfirm }: { from: string; to: string; amount: number; onClose: () => void; onConfirm: (actualAmount: number) => Promise<void> }) {
   const [saving, setSaving] = useState(false)
-  async function confirm() { setSaving(true); try { await onConfirm() } finally { setSaving(false) } }
+  const [customAmount, setCustomAmount] = useState(String(amount))
+  const parsedAmount = Number(customAmount.replace(/\D/g, '')) || 0
+
+  async function confirm() {
+    if (parsedAmount <= 0) return
+    setSaving(true)
+    try {
+      await onConfirm(parsedAmount)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return <Modal centered eyebrow={null} title="Xác nhận đã trả" subtitle="Chỉ xác nhận nếu khoản tiền đã được chuyển." onClose={onClose}>
-    <div className="confirm-settlement-content"><div className="confirm-transfer"><span className="confirm-member">{from.slice(0, 1)}</span><ArrowRight size={17} /><span className="confirm-member receiver">{to.slice(0, 1)}</span></div><p><strong>{from}</strong> đã chuyển cho <strong>{to}</strong></p><b>{money(amount)}</b></div>
-    <div className="modal-actions"><button type="button" className="button secondary" disabled={saving} onClick={onClose}>Chưa, quay lại</button><button type="button" className="button primary" disabled={saving} onClick={() => void confirm()}><Check size={16} /> {saving ? 'Đang lưu...' : 'Xác nhận đã trả'}</button></div>
+    <div className="confirm-settlement-content">
+      <div className="confirm-transfer">
+        <span className="confirm-member">{from.slice(0, 1)}</span>
+        <ArrowRight size={17} />
+        <span className="confirm-member receiver">{to.slice(0, 1)}</span>
+      </div>
+      <p><strong>{from}</strong> đã chuyển cho <strong>{to}</strong></p>
+      <div style={{ margin: '6px 0 2px', display: 'grid', justifyItems: 'center', gap: '5px' }}>
+        <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+          <input
+            type="text"
+            inputMode="numeric"
+            style={{
+              textAlign: 'center',
+              fontSize: '22px',
+              fontWeight: 800,
+              fontFamily: 'Manrope, sans-serif',
+              padding: '10px 28px 10px 14px',
+              width: '190px',
+              borderRadius: '12px',
+              border: '1.5px solid #287b5d',
+              outline: 'none',
+              color: '#287b5d',
+              background: '#ffffff',
+            }}
+            value={customAmount ? new Intl.NumberFormat('vi-VN').format(parsedAmount) : ''}
+            onChange={(e) => setCustomAmount(e.target.value.replace(/\D/g, ''))}
+          />
+          <span style={{ position: 'absolute', right: '14px', fontWeight: 800, fontSize: '18px', color: '#287b5d', pointerEvents: 'none' }}>₫</span>
+        </div>
+        <small style={{ fontSize: '12px', color: '#666e66' }}>Nhập số tiền thực tế đã chuyển</small>
+      </div>
+    </div>
+    <div className="modal-actions">
+      <button type="button" className="button secondary" disabled={saving} onClick={onClose}>Chưa, quay lại</button>
+      <button type="button" className="button primary" disabled={saving || parsedAmount <= 0} onClick={() => void confirm()}>
+        <Check size={16} /> {saving ? 'Đang lưu...' : 'Xác nhận đã trả'}
+      </button>
+    </div>
   </Modal>
 }
 
@@ -1815,19 +1877,6 @@ function ExpenseModal({ members, initial, minDate, onClose, onSave }: { members:
     <div className={`split-summary ${!splitIsValid ? 'invalid' : ''}`}><span>{splitMode === 'custom' && splitByPercent ? 'Tổng tỷ lệ' : 'Tổng phần chia'}</span><strong>{splitMode === 'custom' && splitByPercent ? `${Number(percentTotal.toFixed(2))}%` : money(splitTotal || 0)}{!splitIsValid && <small>{splitByPercent ? ' · Cần đủ 100%' : ` · Cần khớp ${money(numericAmount || 0)}`}</small>}</strong></div>
     <label>Ghi chú <span className="optional">(không bắt buộc)</span><textarea rows={2} maxLength={400} placeholder="Thêm thông tin nếu cần..." value={note} onChange={(e) => setNote(e.target.value)} /></label>
     <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Hủy</button><button className="button primary" disabled={!title.trim() || numericAmount < 1 || !selected.length || !splitIsValid}><Check size={16} /> Lưu khoản chi</button></div>
-  </form></Modal>
-}
-
-function SettlementModal({ members, suggestions, onClose, onSave }: { members: Member[]; suggestions: ReturnType<typeof suggestSettlements>; onClose: () => void; onSave: (from: string, to: string, amount: number, note: string) => void }) {
-  const suggestion = suggestions[0]
-  const [from, setFrom] = useState(suggestion?.fromMemberId ?? members[0]?.id ?? '')
-  const [to, setTo] = useState(suggestion?.toMemberId ?? members[1]?.id ?? '')
-  const [amount, setAmount] = useState(suggestion ? String(suggestion.amount) : '')
-  const [note, setNote] = useState('')
-  return <Modal centered wide title="Ghi nhận chốt sổ" subtitle="Lưu lại khoản tiền một thành viên đã trả." onClose={onClose}><form className="expense-form" onSubmit={(event) => { event.preventDefault(); const value = Number(amount.replace(/[,.\s]/g, '')); if (value > 0 && from !== to) onSave(from, to, value, note.trim()) }}>
-    <div className="form-two"><label>Người trả<select value={from} onChange={(e) => setFrom(e.target.value)}>{members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label><label>Người nhận<select value={to} onChange={(e) => setTo(e.target.value)}>{members.filter((member) => member.id !== from).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label></div>
-    <label>Số tiền<span className="input-suffix"><input inputMode="numeric" placeholder="0" value={amount ? new Intl.NumberFormat('vi-VN').format(Number(amount.replace(/[,.\s]/g, ''))) : ''} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ''))} required /><b>₫</b></span></label><label>Ngày trả<input type="date" defaultValue={today()} disabled /></label><label>Ghi chú <span className="optional">(không bắt buộc)</span><textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Ví dụ: Chuyển khoản ngân hàng" /></label>
-    <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Hủy</button><button className="button primary" disabled={Number(amount) < 1 || from === to}><Check size={16} /> Ghi nhận</button></div>
   </form></Modal>
 }
 
