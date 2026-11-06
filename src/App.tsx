@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowLeftRight, ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Camera, CircleHelp, Cloud, CloudOff, Coffee, Copy, Filter, LogOut, Printer, UserRound,
-  Plus, ReceiptText, RefreshCw, Settings2, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
+  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Film, Filter, Info, LogOut, Pencil, Plane, Printer, UserRound,
+  Plus, ReceiptText, RefreshCw, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
   Wallet, X,
 } from 'lucide-react'
 import {
@@ -15,8 +15,56 @@ import {
 } from './lib/supabase'
 
 type Page = 'expenses' | 'settlements'
-const categories = ['Khác', 'Ăn uống', 'Di chuyển', 'Lưu trú', 'Vé tham quan', 'Mua sắm']
-const categoryIcon = (category: string) => category === 'Ăn uống' ? Utensils : category === 'Di chuyển' ? ArrowLeftRight : Coffee
+
+// NOTE(VI): Lý do: Icon xe máy tối giản theo chuẩn phong cách nét vẽ 24x24 của Lucide
+function Motorbike({ size = 17, ...props }: { size?: number } & React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <circle cx="5" cy="16" r="3" />
+      <circle cx="19" cy="16" r="3" />
+      <path d="M7.5 14h5l4-4h-4" />
+      <path d="M10 14l1.5-4.5" />
+      <path d="M19 16l-3-8h-2" />
+      <path d="M17.5 5h-1.5" />
+    </svg>
+  )
+}
+
+// NOTE(VI): Lý do: Đổi danh mục 'Dịch vụ và giải trí' lên vị trí thứ 2 (sau Ăn uống), đổi icon Khác thành $ (DollarSign) theo yêu cầu người dùng
+// Trước: ['Ăn uống', 'Di chuyển', 'Mua sắm', 'Du lịch', 'Giải trí và dịch vụ', 'Khác'], Khác dùng icon Coffee
+// Sau: ['Ăn uống', 'Dịch vụ và giải trí', 'Di chuyển', 'Mua sắm', 'Du lịch', 'Khác'], Khác dùng icon DollarSign ($)
+// Test: Mở form thêm khoản chi -> Dropdown hiển thị 'Dịch vụ và giải trí' ở vị trí thứ 2; khoản chi 'Khác' hiển thị icon $
+const categories = ['Ăn uống', 'Dịch vụ và giải trí', 'Di chuyển', 'Mua sắm', 'Du lịch', 'Khác']
+const categoryIcon = (category: string) => {
+  switch (category) {
+    case 'Ăn uống':
+      return Utensils
+    case 'Dịch vụ và giải trí':
+    case 'Giải trí và dịch vụ':
+    case 'Vé tham quan':
+      return Film
+    case 'Di chuyển':
+      return Motorbike
+    case 'Mua sắm':
+      return ShoppingCart
+    case 'Du lịch':
+    case 'Lưu trú':
+      return Plane
+    case 'Khác':
+    default:
+      return DollarSign
+  }
+}
 const formatDate = (date: string) => new Intl.DateTimeFormat('vi-VN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date(`${date}T12:00:00`))
 const sumExpenseMonths = (expenses: Expense[]) => expenses.reduce<Record<string, number>>((totals, expense) => {
   const month = expense.date.slice(0, 7)
@@ -100,6 +148,11 @@ export default function App() {
   const [showSettlementHistory, setShowSettlementHistory] = useState(false)
   const [settlementFilters, setSettlementFilters] = useState({ fromDate: '', toDate: '', memberId: '' })
   const [editing, setEditing] = useState<Expense | null>(null)
+  // NOTE(VI): Lý do: State lưu khoản chi cần xem chi tiết khi bấm vào icon Info trên hóa đơn đã khóa
+  // Trước: Không có modal xem chi tiết hóa đơn đã khóa
+  // Sau: Bấm icon Info -> lưu viewingExpense để mở ExpenseDetailModal
+  // Test: Bấm icon Info trên hóa đơn đã khóa -> modal xem chi tiết mở lên
+  const [viewingExpense, setViewingExpense] = useState<Expense | null>(null)
   const [showExpenseFilters, setShowExpenseFilters] = useState(false)
   const [showBillModal, setShowBillModal] = useState(false)
   const [selectedChartMonth, setSelectedChartMonth] = useState<string | null>(null)
@@ -117,7 +170,7 @@ export default function App() {
       toastTimerRef.current = null
     }, 2800)
   }, [])
-  const [expenseFilters, setExpenseFilters] = useState({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '' })
+  const [expenseFilters, setExpenseFilters] = useState({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '', periodId: '' })
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingCount, setPendingCount] = useState(0)
   const [syncing, setSyncing] = useState(false)
@@ -406,7 +459,27 @@ export default function App() {
     }
   })
   const maxMonthlyExpense = Math.max(0, ...monthlyExpenseTotals.map((item) => item.total))
+  // NOTE(VI): Lý do: Bổ sung 5 kỳ chốt sổ gần nhất và kỳ hiện tại cho dropdown bộ lọc theo kỳ
+  // Trước: Chưa có lọc theo kỳ chốt sổ
+  // Sau: Lọc ra kỳ mở (hiện tại) và tối đa 5 kỳ đã chốt sổ gần nhất
+  // Test: Bấm nút Lọc trong Khoản chi -> thấy dropdown "Kỳ chốt sổ" với Kỳ hiện tại và các kỳ chốt gần nhất
+  const openPeriod = ledger.periods.find((period) => period.status === 'open')
+  const closedPeriods = ledger.periods
+    .filter((period) => period.status !== 'open')
+    .sort((a, b) => {
+      const dateA = a.endDate ?? a.settledAt ?? a.startDate
+      const dateB = b.endDate ?? b.settledAt ?? b.startDate
+      return dateB.localeCompare(dateA) || b.startDate.localeCompare(a.startDate)
+    })
+    .slice(0, 5)
+
   const filteredExpenses = ledger.expenses.filter((expense) => {
+    if (expenseFilters.periodId) {
+      if (expense.periodId !== expenseFilters.periodId) {
+        const isOpen = openPeriod && expenseFilters.periodId === openPeriod.id
+        if (!isOpen || expense.periodId) return false
+      }
+    }
     if (expenseFilters.fromDate && expense.date < expenseFilters.fromDate) return false
     if (expenseFilters.toDate && expense.date > expenseFilters.toDate) return false
     if (expenseFilters.category && expense.category !== expenseFilters.category) return false
@@ -418,9 +491,13 @@ export default function App() {
   })
   const activeFilterCount = Object.values(expenseFilters).filter(Boolean).length
 
+  // NOTE(VI): Lý do: Đổi từ "Quyết toán" thành "Chốt sổ" trong menu điều hướng và toàn bộ UI app theo yêu cầu
+  // Trước: label: 'Quyết toán'
+  // Sau: label: 'Chốt sổ'
+  // Test: Kiểm tra thanh điều hướng dưới mobile và menu hiển thị "Chốt sổ"
   const nav: { id: Page; label: string; icon: typeof Wallet }[] = [
     { id: 'expenses', label: 'Khoản chi', icon: ReceiptText },
-    { id: 'settlements', label: 'Quyết toán', icon: ArrowLeftRight },
+    { id: 'settlements', label: 'Chốt sổ', icon: ArrowLeftRight },
   ]
 
   async function saveExpense(expense: Expense, previous?: Expense) {
@@ -495,7 +572,7 @@ export default function App() {
       settlements: current.settlements.map((settlement) => settlement.periodId === selectedPeriod.id && settlement.date > endDate ? { ...settlement, periodId: nextPeriod.id } : settlement),
     }))
     setShowClosePeriodConfirm(false)
-    showToast('Chốt kỳ thành công')
+    showToast('Chốt sổ thành công')
   }
 
 
@@ -519,7 +596,14 @@ export default function App() {
 
     <main className="main-area">
       <header className="topbar">
-        <div className="app-wordmark"><span className="wordmark-icon"><Wallet size={17} /></span><span><strong>SỔ CHI TIÊU</strong><small>Tổng chi tiêu nhóm</small></span></div>
+        {/* NOTE(VI): Lý do: Đổi tiêu đề app thành SỔ CHI TIÊU NHÓM, bỏ dòng phụ "Tổng chi tiêu nhóm", làm to chữ và căn giữa thẳng hàng với icon ví
+            Trước: <strong>SỔ CHI TIÊU</strong><small>Tổng chi tiêu nhóm</small> (2 dòng, chữ nhỏ, bị lệch lên trên so với icon ví)
+            Sau: <strong>SỔ CHI TIÊU NHÓM</strong> (1 dòng, chữ to hơn, căn giữa chuẩn với icon ví)
+            Test: Xem góc trên bên trái header app -> Tiêu đề SỔ CHI TIÊU NHÓM to rõ, nằm chính giữa theo chiều dọc với icon ví */}
+        <div className="app-wordmark">
+          <span className="wordmark-icon"><Wallet size={18} /></span>
+          <strong>SỔ CHI TIÊU NHÓM</strong>
+        </div>
         <div className="top-actions">
           {(!isOnline || syncing || pendingCount > 0 || showSavedStatus) && <div className={`sync-status ${isOnline ? 'online' : 'offline'}`} title={!isOnline ? 'Đang offline' : syncing ? 'Đang đồng bộ' : pendingCount ? `${pendingCount} thay đổi chờ đồng bộ` : 'Đã đồng bộ'}>{isOnline ? <Cloud size={15} /> : <CloudOff size={15} />}<span>{!isOnline ? 'Offline' : syncing ? 'Đang lưu' : pendingCount ? `${pendingCount} chờ` : 'Đã lưu'}</span></div>}
           <button className="account-button" title="Tài khoản" aria-label="Mở thông tin tài khoản" aria-expanded={showAccount} onClick={() => setShowAccount(true)}><AccountAvatar avatarUrl={ledger.ownerAvatarUrl} size={16} /></button>
@@ -546,17 +630,28 @@ export default function App() {
           <CurrentMoneyOverview members={calculationMembers} balances={balances} /><section className="panel full-panel">
             <div className="panel-heading"><h2>Lịch sử chi tiêu</h2><div className="expense-panel-actions"><button type="button" className="filter-button" onClick={() => setShowBillModal(true)}><Printer size={14} /><span>In bill</span></button><button type="button" className={`filter-button ${showExpenseFilters ? 'active' : ''}`} aria-expanded={showExpenseFilters} onClick={() => setShowExpenseFilters((open) => !open)}><Filter size={14} /><span>Lọc</span>{activeFilterCount > 0 && <span className="filter-badge">{activeFilterCount}</span>}</button></div></div>
             {showExpenseFilters && <div className="expense-filters"><div className="expense-filter-fields">
+              <label style={{ gridColumn: 'span 2' }}>Kỳ chốt sổ
+                <select value={expenseFilters.periodId} onChange={(event) => setExpenseFilters({ ...expenseFilters, periodId: event.target.value })}>
+                  <option value="">Tất cả các kỳ</option>
+                  {openPeriod && <option value={openPeriod.id}>Kỳ hiện tại (từ {formatDate(openPeriod.startDate)} đến nay)</option>}
+                  {closedPeriods.map((period) => (
+                    <option key={period.id} value={period.id}>
+                      {period.endDate ? `Kỳ ${formatDate(period.startDate)} – ${formatDate(period.endDate)}` : `Kỳ từ ${formatDate(period.startDate)}`} (Đã chốt)
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label>Từ ngày<input type="date" value={expenseFilters.fromDate} onChange={(event) => setExpenseFilters({ ...expenseFilters, fromDate: event.target.value })} /></label>
               <label>Đến ngày<input type="date" value={expenseFilters.toDate} onChange={(event) => setExpenseFilters({ ...expenseFilters, toDate: event.target.value })} /></label>
               <label>Danh mục<select value={expenseFilters.category} onChange={(event) => setExpenseFilters({ ...expenseFilters, category: event.target.value })}><option value="">Tất cả danh mục</option>{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
               <label>Thành viên<select value={expenseFilters.memberId} onChange={(event) => setExpenseFilters({ ...expenseFilters, memberId: event.target.value })}><option value="">Tất cả thành viên</option>{ledger.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
-              <label>Trạng thái<select value={expenseFilters.paymentStatus} onChange={(event) => setExpenseFilters({ ...expenseFilters, paymentStatus: event.target.value })}><option value="">Tất cả trạng thái</option><option value="unpaid">Chưa thanh toán</option><option value="paid">Đã chốt kỳ</option></select></label>
-            </div><div className="filters-footer"><span>{filteredExpenses.length} khoản phù hợp</span><button disabled={activeFilterCount === 0} onClick={() => setExpenseFilters({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '' })}>Xóa bộ lọc</button></div></div>}
+              <label>Trạng thái<select value={expenseFilters.paymentStatus} onChange={(event) => setExpenseFilters({ ...expenseFilters, paymentStatus: event.target.value })}><option value="">Tất cả trạng thái</option><option value="unpaid">Chưa chốt sổ</option><option value="paid">Đã chốt sổ</option></select></label>
+            </div><div className="filters-footer"><span>{filteredExpenses.length} khoản phù hợp</span><button disabled={activeFilterCount === 0} onClick={() => setExpenseFilters({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '', periodId: '' })}>Xóa bộ lọc</button></div></div>}
             {/* NOTE(VI): Lý do: Sắp xếp hóa đơn thêm sau đưa lên trên (ưu tiên ngày mới nhất desc, cùng ngày thì khoản nào thêm sau/cập nhật sau - updatedAt desc - sẽ xếp lên trên đầu).
                 Trước: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date))
                 Sau: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
                 Test: Thêm khoản chi mới -> khoản chi vừa thêm hiển thị ngay dòng trên cùng của Lịch sử chi tiêu */}
-            <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.'} />
+            <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} onView={(expense) => setViewingExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.'} />
           </section></>}
 
         {/* NOTE(VI): Lý do: Bỏ text tiêu đề "Quyết toán" theo yêu cầu người dùng
@@ -564,7 +659,7 @@ export default function App() {
             Sau: Bỏ heading, vào thẳng thanh kỳ hiện tại và số dư
             Test: Xem trang Quyết toán -> Tiêu đề to "Quyết toán" đã biến mất, giao diện thoáng và gọn */}
         {page === 'settlements' && <>
-          <section className="period-toolbar panel"><div className="period-current"><strong>Kỳ hiện tại</strong><span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span></div>{selectedPeriod?.status === 'open' && <button className="button primary" onClick={() => setShowClosePeriodConfirm(true)}><LockKeyhole size={15} /> Chốt kỳ</button>}</section>
+          <section className="period-toolbar panel"><div className="period-current"><strong>Kỳ hiện tại</strong><span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span></div>{selectedPeriod?.status === 'open' && <button className="button primary" onClick={() => setShowClosePeriodConfirm(true)}><LockKeyhole size={15} /> Chốt sổ</button>}</section>
         {/* NOTE(VI): Lý do: Bỏ text phụ đề và chữ Cần trả/Sẽ nhận ở Số dư hiện tại trang Quyết toán theo yêu cầu
             Trước: Có text "Tính tất cả các khoản chưa thanh toán..." và tag <small>Cần trả / Sẽ nhận</small>
             Sau: Bỏ hẳn <p> và <small>, chỉ hiển thị tên và số tiền gọn gàng
@@ -746,6 +841,14 @@ export default function App() {
       />
     )}
     {showBillModal && <BillModal groupName={ledger.name} expenses={[...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))} members={ledger.members} onClose={() => setShowBillModal(false)} />}
+    {viewingExpense && (
+      <ExpenseDetailModal
+        expense={viewingExpense}
+        members={ledger.members}
+        periods={ledger.periods}
+        onClose={() => setViewingExpense(null)}
+      />
+    )}
     {showAccount && <AccountModal
       email={userEmail}
       cloudEnabled={isCloudConfigured}
@@ -832,7 +935,7 @@ function BillModal({ groupName, expenses, members, onClose }: { groupName: strin
         return [
           `${String(index).padStart(2, '0')}. ${expense.title} — ${money(expense.amount)}`,
           `Người trả: ${memberName(expense.payerId)}`,
-          ...(expense.splitMode === 'custom' ? [`Tỷ lệ: ${splitPercentages(expense)}`] : []),
+          ...((expense.splitMode === 'custom' || expense.splitMode === 'percent') ? [`Tỷ lệ: ${splitPercentages(expense)}`] : []),
         ]
       }),
       '',
@@ -861,7 +964,7 @@ function BillModal({ groupName, expenses, members, onClose }: { groupName: strin
     <div className="bill-preview bill-printable"><div className="bill-document-heading"><h2>{groupName}</h2><p>Ngày tính: {formatDate(today())}</p><strong>{money(total)}</strong></div>
       {dateGroups.length ? <div className="bill-expense-list">{dateGroups.map((group) => <section className="bill-date-group" key={group.date}><h3>{formatDate(group.date)}</h3>{group.expenses.map((expense) => {
         const index = expenses.indexOf(expense) + 1
-        return <article className="bill-expense" key={expense.id}><div className="bill-expense-title"><strong>{String(index).padStart(2, '0')}. {expense.title}</strong><b>{money(expense.amount)}</b></div><p>Người trả: {memberName(expense.payerId)}</p>{expense.splitMode === 'custom' && <p>Tỷ lệ: {splitPercentages(expense)}</p>}</article>
+        return <article className="bill-expense" key={expense.id}><div className="bill-expense-title"><strong>{String(index).padStart(2, '0')}. {expense.title}</strong><b>{money(expense.amount)}</b></div><p>Người trả: {memberName(expense.payerId)}</p>{(expense.splitMode === 'custom' || expense.splitMode === 'percent') && <p>Tỷ lệ: {splitPercentages(expense)}</p>}</article>
       })}</section>)}</div> : <div className="empty-state compact"><p>Không có hóa đơn nào khớp bộ lọc.</p></div>}
       <pre className="bill-copy-text">{billText}</pre>
     </div>
@@ -869,7 +972,23 @@ function BillModal({ groupName, expenses, members, onClose }: { groupName: strin
   </Modal>
 }
 
-function ExpenseList({ expenses, members, periods, onEdit, onDelete, emptyText }: { expenses: Expense[]; members: Member[]; periods: SettlementPeriod[]; onEdit: (expense: Expense) => void; onDelete: (expense: Expense) => void; emptyText: string }) {
+function ExpenseList({
+  expenses,
+  members,
+  periods,
+  onEdit,
+  onDelete,
+  onView,
+  emptyText,
+}: {
+  expenses: Expense[]
+  members: Member[]
+  periods: SettlementPeriod[]
+  onEdit: (expense: Expense) => void
+  onDelete: (expense: Expense) => void
+  onView: (expense: Expense) => void
+  emptyText: string
+}) {
   const [page, setPage] = useState(1)
   const pageCount = Math.max(1, Math.ceil(expenses.length / 15))
   const currentPage = Math.min(page, pageCount)
@@ -887,14 +1006,24 @@ function ExpenseList({ expenses, members, periods, onEdit, onDelete, emptyText }
           <span className="expense-icon"><Icon size={17} /></span>
           <div className="expense-detail">
             <strong>{expense.title}</strong>
-            <div className="expense-meta"><span>{formatDate(expense.date)} <i /> {payer?.name ?? 'Thành viên đã ngừng hoạt động'} đã trả</span>{period && period.status !== 'open' && <span className="paid-stamp"><strong>ĐÃ THANH TOÁN</strong></span>}</div>
-            {period && period.status !== 'open' && <small className="settlement-date">Quyết toán: {formatDate(period.endDate ?? period.settledAt ?? period.startDate)}</small>}
+            <div className="expense-meta"><span>{formatDate(expense.date)} <i /> {payer?.name ?? 'Thành viên đã ngừng hoạt động'} đã trả</span>{period && period.status !== 'open' && <span className="paid-stamp"><strong style={{ color: '#c32026', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "DM Sans", sans-serif', fontWeight: 500, letterSpacing: '0.4px' }}>ĐÃ CHỐT SỔ</strong></span>}</div>
+            {period && period.status !== 'open' && <small className="settlement-date">Chốt sổ: {formatDate(period.endDate ?? period.settledAt ?? period.startDate)}</small>}
           </div>
-          <span className="expense-split-count">{expense.splits.length} ng??i</span>
+          <span className="expense-split-count">{expense.splits.length} người</span>
           <strong className="expense-amount">{money(expense.amount)}</strong>
+          {/* NOTE(VI): Lý do: Đổi icon sửa thành cây bút (Pencil), sửa lỗi font chữ hover s?a/x?a thành Sửa/Xóa tiếng Việt chuẩn, và thêm icon Info cạnh icon khóa cho hóa đơn đã khóa
+              Trước: Icon Settings2, title s?a/x?a bị lỗi font, hóa đơn đã khóa chỉ có icon khóa LockKeyhole
+              Sau: Icon Pencil, title Sửa/Xóa chuẩn UTF-8, thêm nút Info cạnh icon khóa để click xem chi tiết
+              Test: Di chuột vào nút Sửa/Xóa -> hiện tooltip "Sửa", "Xóa"; hóa đơn đã khóa hiện icon Info cạnh khóa -> bấm vào hiện modal xem chi tiết */}
           <div className="row-actions">{locked
-            ? <span title="Kho?n chi thu?c k? ?? ch?t"><LockKeyhole size={15} /></span>
-            : <><button aria-label="S?a kho?n chi" title="S?a" onClick={() => onEdit(expense)}><Settings2 size={15} /></button><button aria-label="X?a kho?n chi" title="X?a" onClick={() => onDelete(expense)}><X size={15} /></button></>}
+            ? <>
+                <button type="button" aria-label="Xem chi tiết khoản chi" title="Xem chi tiết" onClick={() => onView(expense)}><Info size={15} /></button>
+                <span title="Khoản chi thuộc kỳ đã chốt"><LockKeyhole size={15} /></span>
+              </>
+            : <>
+                <button type="button" aria-label="Sửa khoản chi" title="Sửa" onClick={() => onEdit(expense)}><Pencil size={14} /></button>
+                <button type="button" aria-label="Xóa khoản chi" title="Xóa" onClick={() => onDelete(expense)}><X size={15} /></button>
+              </>}
           </div>
         </div>
       })}
@@ -939,7 +1068,7 @@ function SettlementSuggestionsPanel({ suggestions, members, onRecord, inline = f
         <strong>{money(suggestion.amount)}</strong>
         <button className="button small-button" onClick={() => onRecord(from.id, to.id, suggestion.amount)}><Check size={14} /> Đã trả</button>
       </div>
-    })}</div> : <div className="empty-state compact"><div className="empty-icon"><Check size={20} /></div><strong>Sổ đang cân bằng</strong><p>Không còn khoản nào cần quyết toán.</p></div>}
+    })}</div> : <div className="empty-state compact"><div className="empty-icon"><Check size={20} /></div><strong>Sổ đang cân bằng</strong><p>Không còn khoản nào cần chốt sổ.</p></div>}
   </div>
 }
 
@@ -989,7 +1118,7 @@ function ConfirmClosePeriodModal({
     <Modal
       centered
       eyebrow={null}
-      title="Xác nhận chốt kỳ?"
+      title="Xác nhận chốt sổ?"
       subtitle="Kỳ chi tiêu sẽ được đóng lại và mở kỳ mới."
       onClose={onClose}
     >
@@ -1005,7 +1134,7 @@ function ConfirmClosePeriodModal({
           Tất cả hóa đơn trong kỳ này sẽ được chuyển thành
         </div>
         <div className="paid-stamp" style={{ transform: 'none', margin: '2px 0 0', padding: '3px 10px' }}>
-          <strong style={{ fontSize: '13px', letterSpacing: '0.6px', color: '#c32026' }}>ĐÃ THANH TOÁN</strong>
+          <strong style={{ fontSize: '13px', letterSpacing: '0.5px', color: '#c32026', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "DM Sans", sans-serif', fontWeight: 500 }}>ĐÃ CHỐT SỔ</strong>
         </div>
       </div>
       <div className="modal-actions">
@@ -1013,7 +1142,7 @@ function ConfirmClosePeriodModal({
           Quay lại
         </button>
         <button type="button" className="button primary" disabled={closing} onClick={() => void confirm()}>
-          <LockKeyhole size={15} /> {closing ? 'Đang chốt...' : 'Xác nhận chốt kỳ'}
+          <LockKeyhole size={15} /> {closing ? 'Đang chốt...' : 'Xác nhận chốt sổ'}
         </button>
       </div>
     </Modal>
@@ -1395,6 +1524,134 @@ function AccountModal({
     )}
   </Modal>
 }
+
+// NOTE(VI): Lý do: Modal xem chi tiết hóa đơn đã chốt kỳ khi bấm vào icon Info cạnh icon khóa
+// Trước: Không có modal xem thông tin cho hóa đơn đã khóa
+// Sau: Hiển thị đầy đủ thông tin: tên khoản chi, số tiền, danh mục, người trả, ngày chi, kỳ quyết toán, con dấu ĐÃ THANH TOÁN, ghi chú và danh sách chia tiền từng thành viên
+// Test: Bấm icon Info trên hóa đơn đã chốt kỳ -> Modal chi tiết mở lên rõ ràng, đầy đủ thông tin; bấm Đóng để tắt
+function ExpenseDetailModal({
+  expense,
+  members,
+  periods,
+  onClose,
+}: {
+  expense: Expense
+  members: Member[]
+  periods: SettlementPeriod[]
+  onClose: () => void
+}) {
+  const payer = members.find((m) => m.id === expense.payerId)
+  const Icon = categoryIcon(expense.category)
+  const period = periods.find((p) => p.id === expense.periodId)
+  // NOTE(VI): Lý do: Phân biệt rõ các chế độ chia tiền và chỉ hiển thị % khi hóa đơn chia theo % (làm tròn số nguyên)
+  // Trước: Hiển thị (x.x%) cho tất cả các loại hóa đơn, kể cả chia đều; lặp toàn bộ expense.splits
+  // Sau: Lọc activeSplits (amount > 0). Chia đều: hiện badge 'Chia đều', không hiện (%). Chia số tiền: hiện badge 'Theo số tiền', không hiện (%). Chia %: hiện badge 'Theo tỷ lệ %' và (x%) số nguyên
+  // Test: Mở modal xem hóa đơn chia đều -> chỉ thấy tên và số tiền, không thấy %; hóa đơn chia theo % -> thấy % nguyên (vd 10%, 33%)
+  const activeSplits = expense.splits.filter((split) => split.amount > 0)
+  const isEqual = expense.splitMode === 'equal'
+  const isPercent = expense.splitMode === 'percent'
+  const isCustomAmount = !isEqual && !isPercent
+
+  return (
+    <Modal centered wide eyebrow="SỔ CHI TIÊU NHÓM" title="Chi tiết khoản chi" subtitle="" onClose={onClose}>
+      <div style={{ display: 'grid', gap: '14px', padding: '6px 0 16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #eeeee9', paddingBottom: '12px', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span className="expense-icon" style={{ width: '34px', height: '34px', display: 'grid', placeItems: 'center', background: '#e8f1e9', color: '#297555', borderRadius: '10px' }}>
+              <Icon size={18} />
+            </span>
+            <div>
+              <strong style={{ fontSize: '15px', color: '#202722', display: 'block' }}>{expense.title}</strong>
+              <span style={{ fontSize: '11px', color: '#888f86' }}>{expense.category}</span>
+            </div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <strong style={{ fontSize: '16px', color: '#222924', display: 'block' }}>{money(expense.amount)}</strong>
+            {period && period.status !== 'open' && (
+              <div className="paid-stamp" style={{ transform: 'none', margin: '3px 0 0 auto', padding: '2px 7px' }}>
+                <strong style={{ fontSize: '10px', color: '#c32026', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "DM Sans", sans-serif', fontWeight: 500, letterSpacing: '0.4px' }}>ĐÃ CHỐT SỔ</strong>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '12px' }}>
+          <div>
+            <span style={{ color: '#888f86', display: 'block', marginBottom: '2px' }}>Người đã trả</span>
+            <strong>{payer?.name ?? 'Thành viên đã ngừng hoạt động'}</strong>
+          </div>
+          <div>
+            <span style={{ color: '#888f86', display: 'block', marginBottom: '2px' }}>Ngày chi</span>
+            <strong>{formatDate(expense.date)}</strong>
+          </div>
+          {period && (
+            <div style={{ gridColumn: 'span 2' }}>
+              <span style={{ color: '#888f86', display: 'block', marginBottom: '2px' }}>Kỳ chốt sổ</span>
+              <span>{period.endDate ? `Từ ${formatDate(period.startDate)} đến ${formatDate(period.endDate)}` : `Từ ${formatDate(period.startDate)} đến nay`}</span>
+            </div>
+          )}
+          {expense.note && (
+            <div style={{ gridColumn: 'span 2' }}>
+              <span style={{ color: '#888f86', display: 'block', marginBottom: '2px' }}>Ghi chú</span>
+              <p style={{ margin: 0, color: '#444d46', background: '#f6f7f3', padding: '8px 10px', borderRadius: '7px', fontSize: '11.5px' }}>{expense.note}</p>
+            </div>
+          )}
+        </div>
+
+        <div style={{ borderTop: '1px solid #eeeee9', paddingTop: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: '#7a8179', letterSpacing: '0.3px' }}>
+              PHẦN CHIA ({activeSplits.length} THÀNH VIÊN)
+            </span>
+            {isEqual && (
+              <span style={{ fontSize: '11px', fontWeight: 600, color: '#257b5c', background: '#eaf4ee', padding: '2px 8px', borderRadius: '12px' }}>
+                Chia đều
+              </span>
+            )}
+            {isPercent && (
+              <span style={{ fontSize: '11px', fontWeight: 600, color: '#257b5c', background: '#eaf4ee', padding: '2px 8px', borderRadius: '12px' }}>
+                Theo tỷ lệ %
+              </span>
+            )}
+            {isCustomAmount && (
+              <span style={{ fontSize: '11px', fontWeight: 600, color: '#526056', background: '#eef0eb', padding: '2px 8px', borderRadius: '12px' }}>
+                Theo số tiền
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'grid', gap: '6px' }}>
+            {activeSplits.map((split) => {
+              const member = members.find((m) => m.id === split.memberId)
+              const memberIdx = members.findIndex((m) => m.id === split.memberId)
+              const percent = expense.amount > 0 ? Math.round((split.amount / expense.amount) * 100) : 0
+              return (
+                <div key={split.memberId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: '#fafbf8', borderRadius: '8px', fontSize: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <MemberAvatar member={member} index={memberIdx >= 0 ? memberIdx : 0} className="tiny" />
+                    <span>{member?.name ?? 'Thành viên'}</span>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <strong style={{ color: '#252d28' }}>{money(split.amount)}</strong>
+                    {isPercent && (
+                      <small style={{ color: '#91988f', marginLeft: '6px', fontSize: '10px' }}>({percent}%)</small>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="modal-actions" style={{ marginTop: '4px' }}>
+          <button type="button" className="button primary full" onClick={onClose}>
+            Đóng
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 function ExpenseModal({ members, initial, minDate, onClose, onSave }: { members: Member[]; initial: Expense | null; minDate?: string; onClose: () => void; onSave: (expense: Expense) => void }) {
   const [title, setTitle] = useState(initial?.title ?? '')
   const [amount, setAmount] = useState(initial?.amount ? String(initial.amount) : '')
@@ -1414,9 +1671,9 @@ function ExpenseModal({ members, initial, minDate, onClose, onSave }: { members:
     } catch { /* Use all members if local storage is unavailable. */ }
     return members.map((member) => member.id)
   })
-  const [splitMode, setSplitMode] = useState<'equal' | 'custom'>(initial?.splitMode ?? 'equal')
+  const [splitMode, setSplitMode] = useState<'equal' | 'custom'>(initial?.splitMode === 'equal' ? 'equal' : 'custom')
   const [custom, setCustom] = useState<Record<string, string>>(Object.fromEntries(initial?.splits.map((item) => [item.memberId, String(item.amount)]) ?? []))
-  const [splitByPercent, setSplitByPercent] = useState(true)
+  const [splitByPercent, setSplitByPercent] = useState(() => initial?.splitMode === 'custom' ? false : true)
   const [percentages, setPercentages] = useState<Record<string, string>>(() => {
     const splits = initial?.splits ?? []
     if (!initial || initial.amount <= 0 || !splits.length) return {}
@@ -1452,7 +1709,8 @@ function ExpenseModal({ members, initial, minDate, onClose, onSave }: { members:
     event.preventDefault()
     const splits = splitMode === 'equal' ? equal : splitByPercent ? percentSplits : selected.map((memberId) => ({ memberId, amount: Math.round(Number((custom[memberId] ?? '0').replace(/[,.\s]/g, ''))) }))
     if (!title.trim() || numericAmount < 1 || !selected.length || !splitIsValid) return
-    onSave({ id: initial?.id ?? makeId(), title: title.trim(), amount: numericAmount, payerId, date, category, note: note.trim(), splitMode, splits, periodId: initial?.periodId ?? null, updatedAt: new Date().toISOString() })
+    const finalSplitMode: 'equal' | 'custom' | 'percent' = splitMode === 'equal' ? 'equal' : splitByPercent ? 'percent' : 'custom'
+    onSave({ id: initial?.id ?? makeId(), title: title.trim(), amount: numericAmount, payerId, date, category, note: note.trim(), splitMode: finalSplitMode, splits, periodId: initial?.periodId ?? null, updatedAt: new Date().toISOString() })
   }
   const updateSelected = (next: string[]) => {
     setSelected(next)
@@ -1484,7 +1742,7 @@ function SettlementModal({ members, suggestions, onClose, onSave }: { members: M
   const [to, setTo] = useState(suggestion?.toMemberId ?? members[1]?.id ?? '')
   const [amount, setAmount] = useState(suggestion ? String(suggestion.amount) : '')
   const [note, setNote] = useState('')
-  return <Modal centered wide title="Ghi nhận quyết toán" subtitle="Lưu lại khoản tiền một thành viên đã trả." onClose={onClose}><form className="expense-form" onSubmit={(event) => { event.preventDefault(); const value = Number(amount.replace(/[,.\s]/g, '')); if (value > 0 && from !== to) onSave(from, to, value, note.trim()) }}>
+  return <Modal centered wide title="Ghi nhận chốt sổ" subtitle="Lưu lại khoản tiền một thành viên đã trả." onClose={onClose}><form className="expense-form" onSubmit={(event) => { event.preventDefault(); const value = Number(amount.replace(/[,.\s]/g, '')); if (value > 0 && from !== to) onSave(from, to, value, note.trim()) }}>
     <div className="form-two"><label>Người trả<select value={from} onChange={(e) => setFrom(e.target.value)}>{members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label><label>Người nhận<select value={to} onChange={(e) => setTo(e.target.value)}>{members.filter((member) => member.id !== from).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label></div>
     <label>Số tiền<span className="input-suffix"><input inputMode="numeric" placeholder="0" value={amount ? new Intl.NumberFormat('vi-VN').format(Number(amount.replace(/[,.\s]/g, ''))) : ''} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ''))} required /><b>₫</b></span></label><label>Ngày trả<input type="date" defaultValue={today()} disabled /></label><label>Ghi chú <span className="optional">(không bắt buộc)</span><textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Ví dụ: Chuyển khoản ngân hàng" /></label>
     <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Hủy</button><button className="button primary" disabled={Number(amount) < 1 || from === to}><Check size={16} /> Ghi nhận</button></div>

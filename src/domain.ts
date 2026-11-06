@@ -3,10 +3,14 @@
 // Sau: Hỗ trợ lưu trữ avatar dạng URL hoặc Data URL
 // Test: Kiểm tra kiểu dữ liệu Member và Ledger có trường avatarUrl / ownerAvatarUrl
 export type Member = { id: string; name: string; sortOrder: number; active: boolean; avatarUrl?: string | null }
+// NOTE(VI): Lý do: Hỗ trợ splitMode gồm 'equal', 'custom' (chia theo số tiền) và 'percent' (chia theo %)
+// Trước: splitMode chỉ là 'equal' | 'custom'
+// Sau: splitMode là 'equal' | 'custom' | 'percent'
+// Test: Tạo khoản chi mới chia theo % và chia theo số tiền, kiểm tra lưu đúng mode
 export type Split = { memberId: string; amount: number }
 export type Expense = {
   id: string; title: string; amount: number; payerId: string; date: string; note: string;
-  category: string; splitMode: 'equal' | 'custom'; splits: Split[]; periodId: string | null; updatedAt: string
+  category: string; splitMode: 'equal' | 'custom' | 'percent'; splits: Split[]; periodId: string | null; updatedAt: string
 }
 export type Settlement = {
   id: string; fromMemberId: string; toMemberId: string; amount: number; date: string; note: string; periodId: string | null; updatedAt: string

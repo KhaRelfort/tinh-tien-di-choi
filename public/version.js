@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.0.19';
+export const APP_VERSION = '1.1';
 
 if (typeof window !== 'undefined') {
   window.__APP_VERSION__ = APP_VERSION;
