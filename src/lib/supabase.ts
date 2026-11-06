@@ -37,6 +37,10 @@ export async function initializeCloudLedger(name: string, memberNames: string[])
   return fetchCloudLedger()
 }
 
+// NOTE(VI): Lý do: Bỏ cơ chế fallback tự động sang 'custom' theo yêu cầu người dùng vì Supabase đã được nâng cấp cho phép lưu trực tiếp splitMode 'percent'
+// Trước: Có đoạn kiểm tra và retry với 'custom' nếu dính lỗi constraint expenses_split_mode_check
+// Sau: Gửi trực tiếp operation lên máy chủ
+// Test: Tạo khoản chi chia theo % -> lưu trực tiếp splitMode = 'percent' lên Supabase
 export async function syncOperation(operation: Operation) {
   if (!supabase) throw new Error('Chưa cấu hình Supabase.')
   const { error } = await supabase.rpc('apply_sync_operation', {

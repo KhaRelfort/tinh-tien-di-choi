@@ -303,9 +303,15 @@ export default function App() {
         }
       }
       const fresh = await fetchCloudLedger()
-      setLedger(fresh); await writeLedger(fresh)
+      // NOTE(VI): Lý do: Bảo vệ các khoản chi vừa thêm trong lúc đang sync; tránh việc fetchCloudLedger đè mất khoản chi mới thêm
+      // Trước: setLedger(fresh) ghi đè thẳng bản server, làm mất khoản chi vừa nhập nếu người dùng lưu khoản chi trong lúc syncOperation đang chạy
+      // Sau: Đọc lại queue sau vòng lặp; nếu còn thao tác mới thì merge qua applyPendingOperations trước khi lưu
+      // Test: Thêm liên tục 2 khoản chi -> không bao giờ có tình trạng khoản chi thứ 2 bị biến mất tạm thời
+      const remainingQueue = await readQueue()
+      const merged = remainingQueue.length ? applyPendingOperations(fresh, remainingQueue) : fresh
+      setLedger(merged); await writeLedger(merged)
       await refreshMonthlyTotals()
-      setPendingCount(0); setSyncNotice(''); flashSavedStatus()
+      setPendingCount(remainingQueue.length); setSyncNotice(''); flashSavedStatus()
     } catch (error: any) {
       // NOTE(VI): Lý do: Lấy chính xác thông điệp lỗi từ Supabase/PostgreSQL thay vì gán cứng 'Không thể đồng bộ lúc này' khi error không phải instanceof Error
       // Trước: const message = error instanceof Error ? error.message : 'Không thể đồng bộ lúc này.'
@@ -464,20 +470,34 @@ export default function App() {
   // Sau: Lọc ra kỳ mở (hiện tại) và tối đa 5 kỳ đã chốt sổ gần nhất
   // Test: Bấm nút Lọc trong Khoản chi -> thấy dropdown "Kỳ chốt sổ" với Kỳ hiện tại và các kỳ chốt gần nhất
   const openPeriod = ledger.periods.find((period) => period.status === 'open')
-  const closedPeriods = ledger.periods
+  const allClosedPeriods = ledger.periods
     .filter((period) => period.status !== 'open')
     .sort((a, b) => {
       const dateA = a.endDate ?? a.settledAt ?? a.startDate
       const dateB = b.endDate ?? b.settledAt ?? b.startDate
       return dateB.localeCompare(dateA) || b.startDate.localeCompare(a.startDate)
     })
-    .slice(0, 5)
+  const lastClosedPeriod = allClosedPeriods[0]
+  const closedPeriods = allClosedPeriods.slice(0, 5)
 
+  // NOTE(VI): Lý do: Mặc định hiển thị lịch sử chi tiêu là các hóa đơn của kỳ hiện tại (chưa chốt sổ) và kỳ vừa mới chốt sổ (kỳ trước kỳ hiện tại); các hóa đơn của các kỳ cũ hơn sẽ được ẩn
+  // Trước: Khi không chọn bộ lọc, hiển thị toàn bộ hóa đơn từ trước đến giờ
+  // Sau: Mặc định chỉ hiển thị kỳ mở + kỳ vừa chốt gần nhất; nếu muốn xem các kỳ cũ thì chọn "Tất cả các kỳ" hoặc chọn kỳ cụ thể trong bộ lọc
+  // Test: Vào Lịch sử chi tiêu -> chỉ thấy hóa đơn kỳ hiện tại và kỳ vừa chốt; hóa đơn kỳ cũ hơn bị ẩn; mở Lọc -> chọn "Tất cả các kỳ" sẽ thấy toàn bộ
   const filteredExpenses = ledger.expenses.filter((expense) => {
-    if (expenseFilters.periodId) {
+    if (expenseFilters.periodId === 'all') {
+      // Hiển thị tất cả các kỳ, không lọc theo kỳ
+    } else if (expenseFilters.periodId) {
       if (expense.periodId !== expenseFilters.periodId) {
         const isOpen = openPeriod && expenseFilters.periodId === openPeriod.id
         if (!isOpen || expense.periodId) return false
+      }
+    } else {
+      // Mặc định: Chỉ hiển thị kỳ hiện tại (chưa chốt sổ) và kỳ vừa chốt sổ gần nhất
+      const isOpenExpense = expense.periodId === openPeriod?.id || (!expense.periodId && Boolean(openPeriod))
+      const isLastClosedExpense = Boolean(lastClosedPeriod && expense.periodId === lastClosedPeriod.id)
+      if (openPeriod || lastClosedPeriod) {
+        if (!isOpenExpense && !isLastClosedExpense) return false
       }
     }
     if (expenseFilters.fromDate && expense.date < expenseFilters.fromDate) return false
@@ -490,6 +510,60 @@ export default function App() {
     return true
   })
   const activeFilterCount = Object.values(expenseFilters).filter(Boolean).length
+
+  // NOTE(VI): Lý do: Logic in bill thông minh khi chưa chọn bộ lọc:
+  // - Nếu có bộ lọc: in theo bộ lọc người dùng chọn
+  // - Nếu chưa chọn bộ lọc:
+  //   + Nếu kỳ hiện tại (chưa chốt sổ) có hóa đơn -> in kỳ hiện tại
+  //   + Nếu kỳ hiện tại chưa có hóa đơn (vừa chốt sổ xong) -> in kỳ vừa chốt sổ gần nhất
+  // - Tuyệt đối không dùng hook (useMemo) sau early return (if (!ledger) return ...) vì vi phạm Rules of Hooks của React làm app crash "Rendered more hooks than during the previous render"
+  // Trước: useMemo(...) sau dòng if (!ledger) return
+  // Sau: Tính toán thuần túy qua IIFE (plain computation) giống filteredExpenses, orderedSettlements
+  // Test: Mở app -> app load bình thường không bị màn hình lỗi; bấm In bill in đúng kỳ theo logic
+  const billData: { expenses: Expense[]; subtitle: string } = (() => {
+    if (activeFilterCount > 0) {
+      let subtitle = 'Các khoản chi theo bộ lọc'
+      if (expenseFilters.periodId) {
+        if (expenseFilters.periodId === 'all') {
+          subtitle = 'Toàn bộ các kỳ'
+        } else {
+          const found = ledger.periods.find((p) => p.id === expenseFilters.periodId)
+          if (found) {
+            subtitle = found.status === 'open'
+              ? `Kỳ hiện tại (từ ${formatDate(found.startDate)} đến nay)`
+              : found.endDate
+                ? `Kỳ ${formatDate(found.startDate)} – ${formatDate(found.endDate)} (Đã chốt sổ)`
+                : `Kỳ từ ${formatDate(found.startDate)} (Đã chốt sổ)`
+          }
+        }
+      }
+      return {
+        expenses: [...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+        subtitle,
+      }
+    }
+    const currentPeriodExpenses = ledger.expenses.filter((e) => e.periodId === openPeriod?.id || (!e.periodId && openPeriod))
+    if (currentPeriodExpenses.length > 0) {
+      return {
+        expenses: [...currentPeriodExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+        subtitle: openPeriod ? `Kỳ hiện tại (từ ${formatDate(openPeriod.startDate)} đến nay)` : 'Kỳ hiện tại (chưa chốt sổ)',
+      }
+    }
+    if (lastClosedPeriod) {
+      const closedExpenses = ledger.expenses.filter((e) => e.periodId === lastClosedPeriod.id)
+      const periodLabel = lastClosedPeriod.endDate
+        ? `Kỳ vừa chốt sổ (${formatDate(lastClosedPeriod.startDate)} – ${formatDate(lastClosedPeriod.endDate)})`
+        : `Kỳ vừa chốt sổ (từ ${formatDate(lastClosedPeriod.startDate)})`
+      return {
+        expenses: [...closedExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+        subtitle: periodLabel,
+      }
+    }
+    return {
+      expenses: [...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+      subtitle: 'Toàn bộ khoản chi',
+    }
+  })()
 
   // NOTE(VI): Lý do: Đổi từ "Quyết toán" thành "Chốt sổ" trong menu điều hướng và toàn bộ UI app theo yêu cầu
   // Trước: label: 'Quyết toán'
@@ -632,11 +706,12 @@ export default function App() {
             {showExpenseFilters && <div className="expense-filters"><div className="expense-filter-fields">
               <label style={{ gridColumn: 'span 2' }}>Kỳ chốt sổ
                 <select value={expenseFilters.periodId} onChange={(event) => setExpenseFilters({ ...expenseFilters, periodId: event.target.value })}>
-                  <option value="">Tất cả các kỳ</option>
+                  <option value="">Kỳ hiện tại & kỳ vừa chốt (mặc định)</option>
+                  <option value="all">Tất cả các kỳ</option>
                   {openPeriod && <option value={openPeriod.id}>Kỳ hiện tại (từ {formatDate(openPeriod.startDate)} đến nay)</option>}
-                  {closedPeriods.map((period) => (
+                  {closedPeriods.map((period, index) => (
                     <option key={period.id} value={period.id}>
-                      {period.endDate ? `Kỳ ${formatDate(period.startDate)} – ${formatDate(period.endDate)}` : `Kỳ từ ${formatDate(period.startDate)}`} (Đã chốt)
+                      {index === 0 ? 'Kỳ vừa chốt: ' : ''}{period.endDate ? `Kỳ ${formatDate(period.startDate)} – ${formatDate(period.endDate)}` : `Kỳ từ ${formatDate(period.startDate)}`} (Đã chốt)
                     </option>
                   ))}
                 </select>
@@ -651,7 +726,7 @@ export default function App() {
                 Trước: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date))
                 Sau: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
                 Test: Thêm khoản chi mới -> khoản chi vừa thêm hiển thị ngay dòng trên cùng của Lịch sử chi tiêu */}
-            <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} onView={(expense) => setViewingExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.'} />
+            <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} onView={(expense) => setViewingExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : (ledger.expenses.length ? 'Chưa có khoản chi nào trong kỳ này và kỳ vừa chốt.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.')} />
           </section></>}
 
         {/* NOTE(VI): Lý do: Bỏ text tiêu đề "Quyết toán" theo yêu cầu người dùng
@@ -840,7 +915,7 @@ export default function App() {
         onConfirm={closeCurrentPeriod}
       />
     )}
-    {showBillModal && <BillModal groupName={ledger.name} expenses={[...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))} members={ledger.members} onClose={() => setShowBillModal(false)} />}
+    {showBillModal && <BillModal groupName={ledger.name} expenses={billData.expenses} members={ledger.members} subtitle={billData.subtitle} onClose={() => setShowBillModal(false)} />}
     {viewingExpense && (
       <ExpenseDetailModal
         expense={viewingExpense}
@@ -909,10 +984,10 @@ function PaginationControls({ page, pageCount, total, onPageChange }: { page: nu
   if (pageCount <= 1) return null
   const first = (page - 1) * 15 + 1
   const last = Math.min(page * 15, total)
-  return <div className="pagination-controls"><span>{first}?{last} / {total}</span><div><button disabled={page <= 1} aria-label="Trang tr??c" onClick={() => onPageChange(page - 1)}><ChevronLeft size={16} /></button><span>{page} / {pageCount}</span><button disabled={page >= pageCount} aria-label="Trang sau" onClick={() => onPageChange(page + 1)}><ChevronRight size={16} /></button></div></div>
+  return <div className="pagination-controls"><span>{first} – {last} / {total}</span><div><button disabled={page <= 1} aria-label="Trang trước" onClick={() => onPageChange(page - 1)}><ChevronLeft size={16} /></button><span>{page} / {pageCount}</span><button disabled={page >= pageCount} aria-label="Trang sau" onClick={() => onPageChange(page + 1)}><ChevronRight size={16} /></button></div></div>
 }
 
-function BillModal({ groupName, expenses, members, onClose }: { groupName: string; expenses: Expense[]; members: Member[]; onClose: () => void }) {
+function BillModal({ groupName, expenses, members, subtitle = 'Tổng hợp các khoản chi.', onClose }: { groupName: string; expenses: Expense[]; members: Member[]; subtitle?: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false)
   const total = expenses.reduce((sum, expense) => sum + expense.amount, 0)
   const memberName = (id: string) => members.find((member) => member.id === id)?.name ?? 'Thành viên đã ngừng hoạt động'
@@ -925,6 +1000,7 @@ function BillModal({ groupName, expenses, members, onClose }: { groupName: strin
   const splitPercentages = (expense: Expense) => expense.splits.filter((split) => split.amount > 0).map((split) => `${memberName(split.memberId)} ${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(split.amount / expense.amount * 100)}%`).join(', ')
   const billText = [
     `CHI TIẾT CHI TIÊU NHÓM ${groupName.toLocaleUpperCase('vi-VN')}`,
+    ...(subtitle ? [subtitle] : []),
     `Ngày tính: ${formatDate(today())}`,
     `Tổng chi: ${money(total)}`,
     '',
@@ -960,8 +1036,14 @@ function BillModal({ groupName, expenses, members, onClose }: { groupName: strin
     window.setTimeout(() => setCopied(false), 2200)
   }
 
-  return <Modal centered wide className="bill-modal" eyebrow="BILL CHI TIÊU NHÓM" title="Chi tiết chi tiêu" subtitle="Tổng hợp các khoản chi." onClose={onClose}>
-    <div className="bill-preview bill-printable"><div className="bill-document-heading"><h2>{groupName}</h2><p>Ngày tính: {formatDate(today())}</p><strong>{money(total)}</strong></div>
+  return <Modal centered wide className="bill-modal" eyebrow="BILL CHI TIÊU NHÓM" title="Chi tiết chi tiêu" subtitle={subtitle} onClose={onClose}>
+    <div className="bill-preview bill-printable">
+      <div className="bill-document-heading">
+        <h2>{groupName}</h2>
+        {subtitle && <p style={{ margin: '2px 0 4px', fontSize: '11px', color: '#666e66', fontWeight: 600 }}>{subtitle}</p>}
+        <p>Ngày tính: {formatDate(today())}</p>
+        <strong>{money(total)}</strong>
+      </div>
       {dateGroups.length ? <div className="bill-expense-list">{dateGroups.map((group) => <section className="bill-date-group" key={group.date}><h3>{formatDate(group.date)}</h3>{group.expenses.map((expense) => {
         const index = expenses.indexOf(expense) + 1
         return <article className="bill-expense" key={expense.id}><div className="bill-expense-title"><strong>{String(index).padStart(2, '0')}. {expense.title}</strong><b>{money(expense.amount)}</b></div><p>Người trả: {memberName(expense.payerId)}</p>{(expense.splitMode === 'custom' || expense.splitMode === 'percent') && <p>Tỷ lệ: {splitPercentages(expense)}</p>}</article>
