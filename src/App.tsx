@@ -573,6 +573,12 @@ export default function App() {
 
   async function saveExpense(expense: Expense, previous?: Expense) {
     if (!ledger) return
+    try {
+      const splitMemberIds = expense.splits.filter((s) => s.amount > 0).map((s) => s.memberId)
+      if (splitMemberIds.length > 0) {
+        localStorage.setItem('expense-split-member-ids', JSON.stringify(splitMemberIds))
+      }
+    } catch { /* ignore */ }
     let openPeriod = ledger.periods.find((period) => period.status === 'open')
     let nextPeriods = ledger.periods
     if (!openPeriod) {
@@ -904,7 +910,19 @@ export default function App() {
       </div>
     </main>
 
-    {modal === 'expense' && <ExpenseModal members={activeMembers} initial={editing} minDate={ledger.periods.find((period) => period.id === (editing?.periodId ?? ledger.periods.find((item) => item.status === 'open')?.id))?.startDate} onClose={() => { setModal(null); setEditing(null) }} onSave={(expense) => void saveExpense(expense, editing ?? undefined)} />}
+    {modal === 'expense' && (
+      <ExpenseModal
+        members={activeMembers}
+        initial={editing}
+        lastExpenseMemberIds={[...ledger.expenses]
+          .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.date.localeCompare(a.date))[0]
+          ?.splits.filter((s) => s.amount > 0)
+          .map((s) => s.memberId)}
+        minDate={ledger.periods.find((period) => period.id === (editing?.periodId ?? ledger.periods.find((item) => item.status === 'open')?.id))?.startDate}
+        onClose={() => { setModal(null); setEditing(null) }}
+        onSave={(expense) => void saveExpense(expense, editing ?? undefined)}
+      />
+    )}
     {modal === 'confirm_settlement' && pendingSettlement && <ConfirmSettlementModal from={ledger.members.find((member) => member.id === pendingSettlement.fromMemberId)?.name ?? 'Thành viên'} to={ledger.members.find((member) => member.id === pendingSettlement.toMemberId)?.name ?? 'Thành viên'} amount={pendingSettlement.amount} onClose={() => { setPendingSettlement(null); setModal(null) }} onConfirm={confirmPendingSettlement} />}
     {pendingSettlementDelete && <ConfirmDeleteSettlementModal from={ledger.members.find((member) => member.id === pendingSettlementDelete.fromMemberId)?.name ?? 'Thành viên'} to={ledger.members.find((member) => member.id === pendingSettlementDelete.toMemberId)?.name ?? 'Thành viên'} amount={pendingSettlementDelete.amount} onClose={() => setPendingSettlementDelete(null)} onConfirm={confirmDeleteSettlement} />}
     {showClosePeriodConfirm && selectedPeriod && (
@@ -1796,28 +1814,57 @@ function ExpenseDetailModal({
   )
 }
 
-function ExpenseModal({ members, initial, minDate, onClose, onSave }: { members: Member[]; initial: Expense | null; minDate?: string; onClose: () => void; onSave: (expense: Expense) => void }) {
+function ExpenseModal({
+  members,
+  initial,
+  lastExpenseMemberIds,
+  minDate,
+  onClose,
+  onSave,
+}: {
+  members: Member[]
+  initial: Expense | null
+  lastExpenseMemberIds?: string[]
+  minDate?: string
+  onClose: () => void
+  onSave: (expense: Expense) => void
+}) {
   const [title, setTitle] = useState(initial?.title ?? '')
   const [amount, setAmount] = useState(initial?.amount ? String(initial.amount) : '')
   const [payerId, setPayerId] = useState(initial?.payerId ?? members[0]?.id ?? '')
   const [date, setDate] = useState(initial?.date ?? today())
   const [category, setCategory] = useState(initial?.category ?? categories[0])
   const [note, setNote] = useState(initial?.note ?? '')
+
+  // NOTE(VI): Lý do: Lưu danh sách người chia tiền vào localStorage để lần sau mở popup tự động chọn lại đúng những người đã chọn đợt trước
+  // Trước: Nếu localStorage trống thì chọn tất cả thành viên; không fallback sang khoản chi gần nhất
+  // Sau: Ưu tiên localStorage -> fallback khoản chi gần nhất trong sổ -> nếu chưa có thì chọn tất cả; khi toggle hoặc submit đều lưu ngay vào localStorage
+  // Test: Thêm khoản chi chọn 3 người A, B, C -> Lưu -> Bấm "Thêm khoản chi" tiếp theo -> Thấy tự động chọn sẵn 3 người A, B, C
   const [selected, setSelected] = useState<string[]>(() => {
     if (initial) return initial.splits.map((item) => item.memberId)
     try {
       const saved = JSON.parse(localStorage.getItem('expense-split-member-ids') ?? 'null')
-      if (Array.isArray(saved)) {
+      if (Array.isArray(saved) && saved.length > 0) {
         const savedIds = new Set(saved.filter((id): id is string => typeof id === 'string'))
         const remembered = members.filter((member) => savedIds.has(member.id)).map((member) => member.id)
-        if (remembered.length) return remembered
+        if (remembered.length > 0) return remembered
       }
-    } catch { /* Use all members if local storage is unavailable. */ }
+    } catch { /* Use fallback if local storage is unavailable. */ }
+    if (lastExpenseMemberIds && lastExpenseMemberIds.length > 0) {
+      const fallbackIds = new Set(lastExpenseMemberIds)
+      const remembered = members.filter((member) => fallbackIds.has(member.id)).map((member) => member.id)
+      if (remembered.length > 0) return remembered
+    }
     return members.map((member) => member.id)
   })
-  const [splitMode, setSplitMode] = useState<'equal' | 'custom'>(initial?.splitMode === 'equal' ? 'equal' : 'custom')
+
+  // NOTE(VI): Lý do: Mặc định chọn "Chia đều" khi thêm khoản chi mới theo yêu cầu người dùng
+  // Trước: const [splitMode, setSplitMode] = useState<'equal' | 'custom'>(initial?.splitMode === 'equal' ? 'equal' : 'custom') -> khi initial null ra false, bị chọn "Tùy chỉnh số tiền"
+  // Sau: initial ? (initial.splitMode === 'equal' ? 'equal' : 'custom') : 'equal' -> khi thêm mới luôn chọn "Chia đều"
+  // Test: Bấm "Thêm khoản chi" -> Nút "Chia đều" sáng xanh, phần nhập tùy chỉnh/phần trăm bị ẩn
+  const [splitMode, setSplitMode] = useState<'equal' | 'custom'>(initial ? (initial.splitMode === 'equal' ? 'equal' : 'custom') : 'equal')
   const [custom, setCustom] = useState<Record<string, string>>(Object.fromEntries(initial?.splits.map((item) => [item.memberId, String(item.amount)]) ?? []))
-  const [splitByPercent, setSplitByPercent] = useState(() => initial?.splitMode === 'custom' ? false : true)
+  const [splitByPercent, setSplitByPercent] = useState(() => initial ? initial.splitMode === 'percent' : false)
   const [percentages, setPercentages] = useState<Record<string, string>>(() => {
     const splits = initial?.splits ?? []
     if (!initial || initial.amount <= 0 || !splits.length) return {}
@@ -1854,6 +1901,9 @@ function ExpenseModal({ members, initial, minDate, onClose, onSave }: { members:
     const splits = splitMode === 'equal' ? equal : splitByPercent ? percentSplits : selected.map((memberId) => ({ memberId, amount: Math.round(Number((custom[memberId] ?? '0').replace(/[,.\s]/g, ''))) }))
     if (!title.trim() || numericAmount < 1 || !selected.length || !splitIsValid) return
     const finalSplitMode: 'equal' | 'custom' | 'percent' = splitMode === 'equal' ? 'equal' : splitByPercent ? 'percent' : 'custom'
+    try {
+      localStorage.setItem('expense-split-member-ids', JSON.stringify(selected))
+    } catch { /* ignore */ }
     onSave({ id: initial?.id ?? makeId(), title: title.trim(), amount: numericAmount, payerId, date, category, note: note.trim(), splitMode: finalSplitMode, splits, periodId: initial?.periodId ?? null, updatedAt: new Date().toISOString() })
   }
   const updateSelected = (next: string[]) => {
