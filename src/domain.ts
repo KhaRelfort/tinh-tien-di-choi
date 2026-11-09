@@ -65,6 +65,114 @@ export function suggestSettlements(ledger: Ledger, periodId?: string) {
   return suggestions
 }
 
+// NOTE(VI): Lý do: Bóc tách nợ cũ và nợ mới của thành viên theo các kịch bản thực tế khi chia tiền qua nhiều kỳ:
+// 1. Cả kỳ cũ và kỳ này đều nợ -> Kỳ cũ còn X, kỳ này Y
+// 2. Kỳ cũ được nhận (+), kỳ này nợ (-) nhiều hơn -> Kỳ này Y - Đã trừ X kỳ trước
+// 3. Kỳ cũ nợ (-), kỳ này chi tiêu được bù bớt (+) nhưng vẫn còn nợ -> Kỳ cũ còn X - Đã bù trừ Y kỳ này
+// 4. Kỳ cũ nợ (-), kỳ này không phát sinh (0) -> Nợ tồn từ kỳ trước
+// 5. Chỉ nợ kỳ này (pastBalance = 0) hoặc không nợ -> null (không thêm ghi chú)
+// Test: Kiểm tra với các thành viên có nợ dồn kỳ cũ -> trả về đúng text bóc tách tương ứng
+export type DebtBreakdown = {
+  pastBalance: number
+  currentBalance: number
+  totalDebt: number
+  note: string | null
+}
+
+// NOTE(VI): Lý do: Xác định linh hoạt "Kỳ này" để bóc tách nợ:
+// - Nếu kỳ mở đang có hóa đơn -> "Kỳ này" là kỳ mở hiện tại, "Kỳ cũ" là các kỳ trước đó
+// - Nếu kỳ mở chưa có hóa đơn (vừa bấm chốt sổ xong) -> "Kỳ này" là kỳ vừa mới chốt, "Kỳ cũ" là các kỳ trước kỳ vừa chốt
+// Test: Vừa bấm chốt sổ xong xem gợi ý -> vẫn bóc tách đúng "kỳ cũ còn X, kỳ này Y" cho kỳ vừa chốt
+export function getActiveCalculationPeriod(ledger: Ledger): SettlementPeriod | undefined {
+  const openPeriod = ledger.periods.find((p) => p.status === 'open')
+  const openHasExpenses = openPeriod
+    ? ledger.expenses.some((e) => e.periodId === openPeriod.id || (!e.periodId && Boolean(openPeriod)))
+    : false
+
+  if (openPeriod && openHasExpenses) {
+    return openPeriod
+  }
+
+  const allClosedPeriods = ledger.periods
+    .filter((p) => p.status !== 'open')
+    .sort((a, b) => {
+      const dateA = a.endDate ?? a.settledAt ?? a.startDate
+      const dateB = b.endDate ?? b.settledAt ?? b.startDate
+      return dateB.localeCompare(dateA) || b.startDate.localeCompare(a.startDate)
+    })
+
+  if (allClosedPeriods.length > 0) {
+    return allClosedPeriods[0]
+  }
+
+  return openPeriod
+}
+
+export function getMemberDebtBreakdown(ledger: Ledger, memberId: string): DebtBreakdown {
+  const activePeriod = getActiveCalculationPeriod(ledger)
+  const totalBalance = getBalances(ledger).get(memberId) ?? 0
+  const currentBalance = activePeriod ? (getBalances(ledger, activePeriod.id).get(memberId) ?? 0) : totalBalance
+  const pastBalance = totalBalance - currentBalance
+
+  if (totalBalance >= 0) {
+    return { pastBalance, currentBalance, totalDebt: 0, note: null }
+  }
+
+  const totalDebt = -totalBalance
+
+  if (pastBalance === 0) {
+    return { pastBalance, currentBalance, totalDebt, note: null }
+  }
+
+  // Kịch bản 1: Cả kỳ cũ và kỳ này đều nợ
+  if (pastBalance < 0 && currentBalance < 0) {
+    const pastDebt = -pastBalance
+    const currentDebt = -currentBalance
+    return {
+      pastBalance,
+      currentBalance,
+      totalDebt,
+      note: `Kỳ cũ còn ${money(pastDebt)}, kỳ này ${money(currentDebt)}`,
+    }
+  }
+
+  // Kịch bản 2: Kỳ cũ được nhận (+), kỳ này nợ (-) nhiều hơn bù trừ qua
+  if (pastBalance > 0 && currentBalance < 0) {
+    const pastCredit = pastBalance
+    const currentDebt = -currentBalance
+    return {
+      pastBalance,
+      currentBalance,
+      totalDebt,
+      note: `Kỳ này ${money(currentDebt)} - Đã trừ ${money(pastCredit)} kỳ trước`,
+    }
+  }
+
+  // Kịch bản 3: Kỳ cũ nợ (-), kỳ này chi tiêu bù bớt (+) nhưng vẫn còn nợ
+  if (pastBalance < 0 && currentBalance > 0) {
+    const pastDebt = -pastBalance
+    const currentCredit = currentBalance
+    return {
+      pastBalance,
+      currentBalance,
+      totalDebt,
+      note: `Kỳ cũ còn ${money(pastDebt)} - Đã bù trừ ${money(currentCredit)} kỳ này`,
+    }
+  }
+
+  // Kịch bản 4: Kỳ cũ nợ (-), kỳ này không phát sinh (0)
+  if (pastBalance < 0 && currentBalance === 0) {
+    return {
+      pastBalance,
+      currentBalance,
+      totalDebt,
+      note: 'Nợ tồn từ kỳ trước',
+    }
+  }
+
+  return { pastBalance, currentBalance, totalDebt, note: null }
+}
+
 export function isPeriodBalanced(ledger: Ledger, periodId: string) {
   return [...getBalances(ledger, periodId).values()].every((amount) => amount === 0)
 }

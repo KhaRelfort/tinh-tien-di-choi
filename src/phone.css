@@ -1,8 +1,8 @@
-html,body,#root{min-height:100%;width:100%}
+html,body,#root{min-height:100%;min-height:-webkit-fill-available;width:100%;background:#f6f5f1}
 :root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","DM Sans",sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
 h1,h2,h3,strong{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Manrope,sans-serif}
-body{background:#e8e9e4}
-.app-shell{position:relative;width:100%;max-width:430px;min-height:100vh;min-height:100dvh;margin:0 auto;padding-top:env(safe-area-inset-top,0px);overflow-x:hidden;background:#f6f5f1;box-shadow:0 0 50px #1f2e1d14}
+body{background:#f6f5f1}
+.app-shell{position:relative;width:100%;max-width:430px;min-height:100vh;min-height:100dvh;min-height:-webkit-fill-available;margin:0 auto;padding-top:env(safe-area-inset-top,0px);overflow-x:hidden;background:#f6f5f1;box-shadow:0 0 50px #1f2e1d14}
 .sidebar{display:none!important}
 .main-area{margin:0;min-height:100dvh}
 .topbar{height:58px;position:sticky;top:0;z-index:15;padding:0 17px;background:#f6f5f1ed;border-bottom:1px solid #eeeee9;backdrop-filter:blur(16px)}
@@ -60,7 +60,7 @@ body{background:#e8e9e4}
 .account-add-member-form input{width:100%;height:38px;padding:0 10px;border:1px solid #e5e8e1;border-radius:7px;color:#303832;font-size:14px}
 .account-add-member-form>div{display:flex;justify-content:flex-end;gap:7px}
 .account-add-member-form .button{height:36px;padding:0 14px;font-size:12.5px}
-.content{width:100%;max-width:none;margin:0;padding:20px 17px calc(115px + env(safe-area-inset-bottom,0px))}
+.content{width:100%;max-width:none;margin:0;padding:20px 17px calc(42px + env(safe-area-inset-bottom,0px))}
 .page-heading{align-items:center;gap:8px;margin-bottom:18px}
 .overview-heading{margin-bottom:15px}
 .overview-heading h1{font-size:21px}
@@ -69,12 +69,13 @@ body{background:#e8e9e4}
 .page-heading p{font-size:13.5px;line-height:1.45}
 .page-heading>.button{height:36px;margin-top:12px;padding:0 10px;font-size:9px;white-space:nowrap}
 .summary-grid{grid-template-columns:1fr 1fr;gap:9px;margin-bottom:11px}
-.summary-card{height:119px;padding:13px;border-radius:13px}
+.summary-card{position:relative;overflow:hidden;height:119px;padding:13px;border-radius:13px}
 .summary-card:first-child{grid-column:auto;height:119px}
-.summary-card>strong{margin-top:9px;font-size:19px;font-weight:700;letter-spacing:-.3px}
+.summary-card>strong{position:relative;z-index:1;margin-top:9px;font-size:19px;font-weight:700;letter-spacing:-.3px}
 .summary-card:not(:first-child)>strong{font-size:15.5px;font-weight:700}
-.summary-card>small{font-size:11.5px}
-.summary-top{font-size:12.5px;font-weight:500;color:#717a72}
+.summary-card>small{position:relative;z-index:1;font-size:11.5px}
+.summary-top{position:relative;z-index:1;font-size:12.5px;font-weight:500;color:#717a72}
+.card-watermark{position:absolute;right:17px;bottom:-18px;font:800 104px Manrope,sans-serif;color:#dcebe0;transform:rotate(-10deg);pointer-events:none;z-index:0}
 .summary-icon{width:27px;height:27px}
 .summary-icon svg{width:15px;height:15px}
 .overview-grid,.settlement-layout{grid-template-columns:minmax(0,1fr);gap:10px}
@@ -142,6 +143,7 @@ body{background:#e8e9e4}
 .suggestion-verb{font-size:12px;font-weight:400;color:#7d867f;flex-shrink:0;margin:0 1px}
 .suggestion-row>strong{font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;color:#232b25;letter-spacing:-.15px}
 .suggestion-row .small-button{grid-column:auto;grid-row:auto;justify-self:end;height:29px;padding:0 9px;font-size:12px;font-weight:600;border-radius:7px;gap:4px;white-space:nowrap}
+.suggestion-debt-note{grid-column:1/-1;font-size:11.5px;color:#788279;margin-top:-2px;padding-left:2px;line-height:1.35}
 .history-row{gap:8px;padding:9px 0}
 .history-row strong,.history-row>strong{font-size:13px;font-weight:500}
 .history-row small{font-size:11.5px;font-weight:400;color:#858e86}
@@ -158,7 +160,7 @@ body{background:#e8e9e4}
    Trước: padding: 5px 1px, không có height cố định, không có background rõ ràng, chữ sát viền
    Sau: Chiều cao nút 42px (chuẩn Apple), bo tròn 21px, nền pill rộng rãi thoáng đãng, padding 0 14px, cỡ chữ 12.5px rõ đẹp, tab active có nền xanh dịu nổi bật
    Test: Xem trên iPhone hoặc mobile view -> 2 nút menu đáy to rõ, thoáng đãng, cách đáy safe-area hợp lý */
-.mobile-nav{display:grid!important;position:fixed;z-index:30;left:50%;right:auto;bottom:0;width:min(100%,430px);transform:translateX(-50%);grid-template-columns:1fr 1fr;gap:10px;padding:9px 13px calc(11px + env(safe-area-inset-bottom,0px));background:#ffffffed;border-top:1px solid #e9eae4;box-shadow:0 -6px 24px rgba(38,52,46,.08);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+.mobile-nav{display:none!important}
 .mobile-nav button{height:42px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 14px;border-radius:21px;border:1px solid #ecefe9;background:#f4f6f2;color:#687269;font-size:13.5px;font-weight:600;transition:all .18s ease;outline:none;-webkit-tap-highlight-color:transparent}
 .mobile-nav button:hover{background:#ebefe8;color:#384239}
 .mobile-nav button.active{background:#eaf4ed;border-color:#badcc6;color:var(--green);font-weight:700;box-shadow:0 2px 6px rgba(37,123,92,.1)}
@@ -201,15 +203,34 @@ body{background:#e8e9e4}
 .centered-modal .modal-heading .eyebrow{margin-left:auto;margin-right:auto}
 .centered-modal .modal-actions{justify-content:center}
 .wide-modal{width:min(100%,560px)}
-.custom-splits-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.custom-splits-header .percentage-toggle{display:flex;align-items:center;gap:7px;font-size:9px}
-.custom-splits-header .percentage-toggle input{width:15px;height:15px;margin:0;accent-color:#287b5d}
-.custom-splits-header>small{font-size:8px;color:#90968e;font-weight:500}
-.custom-split-row>span:first-child{font-size:9px}
+.form-label-row{font-size:13px;font-weight:700;color:#596159;margin-bottom:-2px}
+.form-label-row .text-button{font-size:12.5px;font-weight:700}
+/* NOTE(VI): Lý do: Nâng cấp UI popup Thêm khoản chi theo yêu cầu:
+   1. Làm nổi bật 2 tab "Chia đều" & "Tùy chỉnh số tiền" (tăng chiều cao 38px, chữ 13.5px đậm, tab đang chọn có nền xanh var(--green) chữ trắng nổi bật).
+   2. Điều chỉnh nút gạt % tinh tế hơn (thu gọn 34x20px, chuyển màu xanh đồng bộ #358d69) để không lấn át 2 tab chính bên trên.
+   Trước: 2 tab nhỏ mờ (30px, 10px), nút gạt to và màu neon lấn át.
+   Sau: 2 tab chính hiển thị rõ ràng, nút gạt phụ tinh tế, phân cấp thị giác chuẩn xác.
+   Test: Mở modal Thêm khoản chi -> 2 tab to rõ, bấm chuyển qua lại tab chọn nổi bật; nút gạt % hài hòa phía dưới. */
+.split-toggle{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#eaefe8;border:1px solid #dce4d9;border-radius:10px;padding:4px}
+.split-toggle button{height:38px;border:0;border-radius:7px;background:transparent;color:#556257;font-size:13.5px;font-weight:600;display:flex;align-items:center;justify-content:center;transition:all .18s ease}
+.split-toggle button.selected{background:var(--green);color:#fff;font-weight:700;box-shadow:0 2px 7px rgba(37,123,92,.28)}
+.custom-splits-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0 4px}
+.custom-splits-header .percentage-toggle.ios-switch-wrap{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+.ios-switch-input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.ios-switch-slider{position:relative;display:inline-block;width:34px;height:20px;background:#e2e6e0;border-radius:10px;transition:background-color .2s ease;flex-shrink:0}
+.ios-switch-slider::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:transform .2s cubic-bezier(0.4,0,0.2,1)}
+.ios-switch-input:checked + .ios-switch-slider{background:#358d69}
+.ios-switch-input:checked + .ios-switch-slider::after{transform:translateX(14px)}
+.ios-switch-input:focus-visible + .ios-switch-slider{outline:2px solid #358d69;outline-offset:2px}
+.percentage-toggle-label{font-size:13px;font-weight:600;color:#303832}
+.custom-splits-header>small{font-size:11.5px;color:#768077;font-weight:500}
+.custom-split-row>span:first-child{font-size:13.5px;font-weight:600;color:#303832}
 .split-input-pair{display:grid;grid-template-columns:1fr 1fr;gap:6px;width:58%}
-.split-input-pair input,.custom-splits .custom-amount-input{width:100%;text-align:right}
+.split-input-pair input,.custom-splits .custom-amount-input{width:100%;text-align:right;font-size:13.5px}
 .split-input-pair input[readonly]{background:#f7f8f5;color:#737b73}
 .custom-splits .custom-amount-input{width:58%;text-align:right}
+.split-summary{font-size:12.5px}
+.split-summary strong{font-size:13.5px}
 .bill-modal .modal-card{width:min(100%,680px)}
 .bill-preview{max-height:58vh;overflow:auto;border:1px solid #eceee8;border-radius:10px;padding:15px;background:#fff}
 .bill-document-heading{display:grid;gap:5px;padding-bottom:12px;border-bottom:1px solid #eceee8}
@@ -242,8 +263,14 @@ body{background:#e8e9e4}
    Sau: Cỡ chữ 14px Semibold (600), ngày tháng 12.5px (400) với ngày nổi bật 600, nút Chốt kỳ cao 35px vừa vặn
    Test: Vào tab Quyết toán -> Khung Kỳ hiện tại cân đối, thanh thoát chuẩn iOS */
 .period-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;padding:12px 14px}
+.period-accordion-panel{margin:0 0 10px;padding:12px 14px;cursor:pointer;user-select:none;transition:background .15s}
+.period-accordion-panel:hover{background:#fcfdfa}
+.period-accordion-header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.settlement-expanded-container{margin-top:12px;padding-top:12px;border-top:1px solid #eeeee8;display:grid;gap:12px;animation:suggestions-reveal .18s ease-out both}
+.settlement-notice-box{background:#f5f9f6;border:1px solid #dbeae0;border-radius:10px;padding:12px 13px;display:grid;gap:10px}
+.settlement-notice-text{display:flex;align-items:flex-start;gap:8px;color:#2d3f32;font-size:13px;line-height:1.45}
 .period-current{display:grid;gap:3px}
-.period-current strong{font-size:14px;color:#242c26;font-weight:600;letter-spacing:-.15px}
+.period-current h2,.period-current strong{font-size:15px;color:#222a24;font-weight:600;letter-spacing:-.2px;line-height:1.2;margin:0}
 .period-current span{font-size:12.5px;color:#727b73;font-weight:400}
 .period-current span b{font-weight:600;color:#39423b}
 .period-toolbar .button{height:35px;padding:0 13px;font-size:12.5px;font-weight:600;border-radius:8px;gap:6px}
@@ -290,16 +317,22 @@ body{background:#e8e9e4}
 .spin{animation:spin 1s linear infinite}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
-.floating-add-expense{position:fixed;z-index:40;right:max(16px,calc((100vw - 430px)/2 + 16px));bottom:calc(76px + env(safe-area-inset-bottom,0px));height:40px;width:152px;padding:0 12px;border-radius:20px;display:inline-flex;align-items:center;justify-content:center;gap:6px;box-shadow:0 4px 14px #176b4a35;white-space:nowrap;font-size:12px;font-weight:700}
+.floating-add-expense{position:fixed;z-index:40;right:max(16px,calc((100vw - 430px)/2 + 16px));bottom:calc(18px + env(safe-area-inset-bottom,0px));height:40px;width:152px;padding:0 12px;border-radius:20px;display:inline-flex;align-items:center;justify-content:center;gap:6px;box-shadow:0 4px 14px #176b4a35;white-space:nowrap;font-size:12px;font-weight:700}
 .floating-add-expense svg{width:18px;height:18px;flex:0 0 auto}
 .floating-add-expense span{font-size:12px;font-weight:700;letter-spacing:-.2px}
 
+/* NOTE(VI): Lý do: Cho app hiển thị tràn viền full màn hình xuống thanh Home của iPhone (edge-to-edge), cả giao diện chính và modal
+   Trước: body màu xám #e8e9e4, padding-bottom 75px tạo khoảng trống lớn, modal centered bị lơ lửng cách đáy màn hình 20px
+   Sau: html/body background #f6f5f1 liền mạch, modal chuyển thành bottom sheet chạm đáy màn hình với padding safe-area hợp lý, không bị ngắt quãng
+   Test: Mở trên iPhone hoặc Safari/PWA -> Toàn bộ nền app và modal tràn full xuống dưới thanh Home indicator */
 @media(max-width:560px){
-  body{padding-bottom:0;background:#f6f5f1}
-  .app-shell{padding-top:0;box-shadow:none}
-  .main-area{min-height:100dvh}
+  html,body{padding-bottom:0;margin:0;background:#f6f5f1!important;min-height:100%;min-height:-webkit-fill-available}
+  .app-shell{width:100%;max-width:100%;min-height:100vh;min-height:100dvh;min-height:-webkit-fill-available;padding-top:0;box-shadow:none}
+  .main-area{min-height:100vh;min-height:100dvh;min-height:-webkit-fill-available}
   .topbar{height:calc(56px + env(safe-area-inset-top,0px));padding:env(safe-area-inset-top,0px) 15px 0}
-  .content{padding:18px 15px calc(115px + env(safe-area-inset-bottom,0px))}
-  .mobile-nav{padding-bottom:calc(11px + env(safe-area-inset-bottom,0px))}
+  .content{padding:18px 15px calc(42px + env(safe-area-inset-bottom,0px))}
+  .mobile-nav{display:none!important}
+  .modal-backdrop.centered-backdrop{align-items:flex-end;padding:0}
+  .modal-backdrop.centered-backdrop .centered-modal{width:100%;max-width:100%;border-radius:19px 19px 0 0;padding:22px 19px calc(20px + env(safe-area-inset-bottom,0px))}
 }
 

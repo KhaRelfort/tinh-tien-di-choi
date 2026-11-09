@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
-  ArrowLeftRight, ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Film, Filter, Info, LogOut, Pencil, Plane, Printer, UserRound,
+  ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
+  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
   Plus, ReceiptText, RefreshCw, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
   Wallet, X,
 } from 'lucide-react'
 import {
-  equalSplits, getBalances, getUnpaidTotal, makeDemoLedger, makeId, memberColor, money, normalizeLedger,
+  equalSplits, getBalances, getMemberDebtBreakdown, getUnpaidTotal, makeDemoLedger, makeId, memberColor, money, normalizeLedger,
   markClosedPeriodsSettled, suggestSettlements, today, type Expense, type Ledger, type Member, type Operation, type Settlement, type SettlementPeriod,
 } from './domain'
 import { clearQueue, queueOperation, readLedger, readQueue, removeOperation, replaceOperation, writeLedger } from './lib/localStore'
@@ -14,7 +14,6 @@ import {
   fetchCloudLedger, fetchMonthlyExpenseTotals, initializeCloudLedger, isCloudConfigured, signIn, signOut, signUp, supabase, syncOperation,
 } from './lib/supabase'
 
-type Page = 'expenses' | 'settlements'
 
 // NOTE(VI): Lý do: Icon xe máy tối giản theo chuẩn phong cách nét vẽ 24x24 của Lucide
 function Motorbike({ size = 17, ...props }: { size?: number } & React.SVGProps<SVGSVGElement>) {
@@ -134,8 +133,9 @@ export default function App() {
   const [ledger, setLedger] = useState<Ledger | null>(null)
   const [cachedMonthlyTotals, setCachedMonthlyTotals] = useState<Record<string, number> | null>(null)
   const computedMonthlyTotals = useMemo(() => ledger ? sumExpenseMonths(ledger.expenses) : {}, [ledger?.expenses])
-  const [page, setPage] = useState<Page>('expenses')
   const [modal, setModal] = useState<'expense' | 'confirm_settlement' | null>(null)
+  const [showSettlementSection, setShowSettlementSection] = useState(false)
+  const [showSettlementHistoryModal, setShowSettlementHistoryModal] = useState(false)
   const [pendingSettlement, setPendingSettlement] = useState<{ fromMemberId: string; toMemberId: string; amount: number; periodId: string } | null>(null)
   const [pendingSettlementDelete, setPendingSettlementDelete] = useState<Settlement | null>(null)
   // NOTE(VI): Lý do: Bổ sung popup xác nhận trước khi chốt kỳ để tránh bấm nhầm
@@ -145,7 +145,6 @@ export default function App() {
   const [showClosePeriodConfirm, setShowClosePeriodConfirm] = useState(false)
   const [settlementHistoryPage, setSettlementHistoryPage] = useState(1)
   const [showSettlementFilters, setShowSettlementFilters] = useState(false)
-  const [showSettlementHistory, setShowSettlementHistory] = useState(false)
   const [settlementFilters, setSettlementFilters] = useState({ fromDate: '', toDate: '', memberId: '' })
   const [editing, setEditing] = useState<Expense | null>(null)
   // NOTE(VI): Lý do: State lưu khoản chi cần xem chi tiết khi bấm vào icon Info trên hóa đơn đã khóa
@@ -562,15 +561,6 @@ export default function App() {
     }
   })()
 
-  // NOTE(VI): Lý do: Đổi từ "Quyết toán" thành "Chốt sổ" trong menu điều hướng và toàn bộ UI app theo yêu cầu
-  // Trước: label: 'Quyết toán'
-  // Sau: label: 'Chốt sổ'
-  // Test: Kiểm tra thanh điều hướng dưới mobile và menu hiển thị "Chốt sổ"
-  const nav: { id: Page; label: string; icon: typeof Wallet }[] = [
-    { id: 'expenses', label: 'Khoản chi', icon: ReceiptText },
-    { id: 'settlements', label: 'Chốt sổ', icon: ArrowLeftRight },
-  ]
-
   async function saveExpense(expense: Expense, previous?: Expense) {
     if (!ledger) return
     try {
@@ -668,7 +658,7 @@ export default function App() {
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><Wallet /></div><div><strong>chia tiền</strong><span>đi chơi cùng nhau</span></div></div>
       <div className="trip-selector"><div className="trip-icon">✳</div><div className="trip-copy"><span>SỔ CHI TIÊU</span><strong>{ledger.name}</strong></div><ChevronDown size={15} /></div>
-      <div className="nav-label">MENU</div><nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} onClick={() => setPage(id)}><Icon size={18} strokeWidth={1.9} /><span>{label}</span></button>)}</nav>
+      <div className="nav-label">MENU</div><nav><button className="nav-item active"><ReceiptText size={18} strokeWidth={1.9} /><span>Sổ chi tiêu</span></button></nav>
       <div className="sidebar-bottom"><button className="help-card" onClick={() => setSyncNotice('Thêm khoản chi, chọn người trả và chia phần cho các thành viên. Số dư được cập nhật tự động.')}><span className="help-icon"><CircleHelp size={16} /></span><span><strong>Cần trợ giúp?</strong><small>Cách chia tiền hoạt động</small></span><ArrowUpRight size={14} /></button></div>
     </aside>
 
@@ -694,8 +684,8 @@ export default function App() {
             Trước: Có <div className="page-heading"><div><h1>Khoản chi</h1></div></div>
             Sau: Bỏ heading, vào thẳng các card tổng quan
             Test: Xem trang Khoản chi -> Tiêu đề to "Khoản chi" đã biến mất, giao diện thoáng và gọn */}
-        {page === 'expenses' && <><section className="summary-grid expense-summary-grid">
-            <article className="summary-card total-card"><div className="summary-top"><span>Tổng chi chưa thanh toán</span><span className="summary-icon green"><Wallet size={17} /></span></div><strong>{money(unpaidTotal)}</strong><div className="card-watermark">₫</div></article>
+        <section className="summary-grid expense-summary-grid">
+            <article className="summary-card total-card"><div className="card-watermark" aria-hidden="true">₫</div><div className="summary-top"><span>Tổng chi chưa thanh toán</span><span className="summary-icon green"><Wallet size={17} /></span></div><strong>{money(unpaidTotal)}</strong></article>
             <article className="summary-card"><div className="summary-top"><span>Chi tiêu tháng này</span></div><strong>{money(thisMonth)}</strong><div ref={monthlyChartRef} className="monthly-chart" aria-label="Chi tiêu theo tháng trong 6 tháng gần nhất"><div className="mini-bars">{monthlyExpenseTotals.map((item) => {
               const barHeight = maxMonthlyExpense ? item.total / maxMonthlyExpense * 92 : 0
               return <button key={item.key} type="button" className={`month-bar ${item.isCurrent ? 'current-month' : ''} ${item.total === 0 ? 'no-data' : ''} ${selectedChartMonth === item.key ? 'selected-month' : ''}`} title={`${item.title}: ${money(item.total)}`} aria-label={`${item.title}: ${money(item.total)}`} aria-pressed={selectedChartMonth === item.key} onClick={() => setSelectedChartMonth(item.key)}><i style={{ height: `${barHeight}%` }} />{selectedChartMonth === item.key && <><b style={{ bottom: `calc(${barHeight}% + 3px)` }}>{new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 1 }).format(item.total / 1000)}k</b><small>{item.label}</small></>}</button>
@@ -705,7 +695,93 @@ export default function App() {
               Trước: Có p phụ đề; nút bị co rớt chữ Lọc xuống dòng; tiêu đề bọc trong div thừa gây lệch hàng
               Sau: Tiêu đề h2 trực tiếp trong panel-heading với align-items: center; nút có thẻ span và white-space: nowrap
               Test: Xem phần Lịch sử chi tiêu -> Tiêu đề gọn gàng, căn thẳng hàng ngang tuyệt đối với 2 nút In bill và Lọc */}
-          <CurrentMoneyOverview members={calculationMembers} balances={balances} /><section className="panel full-panel">
+          <CurrentMoneyOverview members={calculationMembers} balances={balances} />
+
+          {/* NOTE(VI): Lý do: Gộp chức năng Chốt sổ vào ngay dưới khung Số dư hiện tại theo yêu cầu người dùng
+              Trước: Phải bấm chuyển tab sang menu "Chốt sổ" riêng biệt ở thanh điều hướng dưới cùng
+              Sau: Vùng Kỳ hiện tại nằm dưới Số dư, click vào sẽ xổ thông tin xuống (đẩy Lịch sử chi tiêu xuống), gồm: thông báo & nút Chốt sổ kỳ này, bảng Gợi ý chuyển tiền kèm nút Đã trả, và nút mở popup Lịch sử trả tiền
+              Test: Click vào thanh "Kỳ hiện tại" -> xổ xuống thông báo, nút chốt sổ, gợi ý chuyển tiền; bấm "Chốt sổ kỳ này" -> mở popup xác nhận chốt; bấm "Xem lịch sử trả tiền" -> mở popup lịch sử trả tiền */}
+          <section
+            className="panel period-accordion-panel"
+            onClick={() => setShowSettlementSection((open) => !open)}
+          >
+            <div className="period-accordion-header">
+              <div className="period-current">
+                <h2>Kỳ chi tiêu hiện tại</h2>
+                <span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span>
+              </div>
+              <div className="period-accordion-action" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <button
+                  type="button"
+                  className={`filter-button ${showSettlementSection ? 'active' : ''}`}
+                  aria-expanded={showSettlementSection}
+                  style={{ pointerEvents: 'none' }}
+                >
+                  <ChevronDown
+                    size={14}
+                    style={{
+                      transform: showSettlementSection ? 'rotate(180deg)' : 'none',
+                      transition: 'transform 0.2s ease',
+                    }}
+                  />
+                  <span>{showSettlementSection ? 'Thu gọn' : 'Chốt sổ'}</span>
+                </button>
+              </div>
+            </div>
+
+            {showSettlementSection && (
+              <div className="settlement-expanded-container">
+                {/* 1. Thông báo & nút chốt sổ */}
+                <div
+                  className="settlement-notice-box"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="settlement-notice-text">
+                    <Info size={17} style={{ color: '#287b5d', flexShrink: 0, marginTop: '2px' }} />
+                    <span>Phải bấm chốt sổ để chốt kỳ tính toán này trước khi báo thanh toán cho các thành viên.</span>
+                  </div>
+                  {selectedPeriod?.status === 'open' && (
+                    <button
+                      type="button"
+                      className="button primary"
+                      style={{ height: '36px', fontSize: '13px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px', width: '100%', borderRadius: '8px' }}
+                      onClick={() => setShowClosePeriodConfirm(true)}
+                    >
+                      <LockKeyhole size={15} />
+                      <span>Chốt sổ kỳ này</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* 2. Gợi ý chuyển tiền */}
+                <div onClick={(e) => e.stopPropagation()}>
+                  <SettlementSuggestionsPanel
+                    inline
+                    ledger={ledger}
+                    groupName={ledger.name}
+                    suggestions={suggestions}
+                    members={ledger.members}
+                    onRecord={(from, to, amount) => requestSettlementConfirmation(from, to, amount, ledger.periods.find((period) => period.status === 'open')?.id ?? '')}
+                  />
+                </div>
+
+                {/* 3. Nút xem Lịch sử chuyển tiền */}
+                <div onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    style={{ height: '36px', fontSize: '13px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px', width: '100%', background: '#fff', border: '1px solid #e0e4dd', borderRadius: '8px' }}
+                    onClick={() => setShowSettlementHistoryModal(true)}
+                  >
+                    <History size={15} />
+                    <span>Lịch sử trả tiền {orderedSettlements.length > 0 ? `(${orderedSettlements.length})` : ''}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="panel full-panel">
             <div className="panel-heading"><h2>Lịch sử chi tiêu</h2><div className="expense-panel-actions"><button type="button" className="filter-button" onClick={() => setShowBillModal(true)}><Printer size={14} /><span>In bill</span></button><button type="button" className={`filter-button ${showExpenseFilters ? 'active' : ''}`} aria-expanded={showExpenseFilters} onClick={() => setShowExpenseFilters((open) => !open)}><Filter size={14} /><span>Lọc</span>{activeFilterCount > 0 && <span className="filter-badge">{activeFilterCount}</span>}</button></div></div>
             {showExpenseFilters && <div className="expense-filters"><div className="expense-filter-fields">
               <label style={{ gridColumn: 'span 2' }}>Kỳ chốt sổ
@@ -731,181 +807,7 @@ export default function App() {
                 Sau: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
                 Test: Thêm khoản chi mới -> khoản chi vừa thêm hiển thị ngay dòng trên cùng của Lịch sử chi tiêu */}
             <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} onView={(expense) => setViewingExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : (ledger.expenses.length ? 'Chưa có khoản chi nào trong kỳ này và kỳ vừa chốt.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.')} />
-          </section></>}
-
-        {/* NOTE(VI): Lý do: Bỏ text tiêu đề "Quyết toán" theo yêu cầu người dùng
-            Trước: Có <div className="page-heading"><div><h1>Quyết toán</h1></div></div>
-            Sau: Bỏ heading, vào thẳng thanh kỳ hiện tại và số dư
-            Test: Xem trang Quyết toán -> Tiêu đề to "Quyết toán" đã biến mất, giao diện thoáng và gọn */}
-        {page === 'settlements' && <>
-          <section className="period-toolbar panel"><div className="period-current"><strong>Kỳ hiện tại</strong><span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span></div></section>
-        {/* NOTE(VI): Lý do: Bỏ text phụ đề và chữ Cần trả/Sẽ nhận ở Số dư hiện tại trang Quyết toán theo yêu cầu
-            Trước: Có text "Tính tất cả các khoản chưa thanh toán..." và tag <small>Cần trả / Sẽ nhận</small>
-            Sau: Bỏ hẳn <p> và <small>, chỉ hiển thị tên và số tiền gọn gàng
-            Test: Vào tab Quyết toán -> Tiêu đề Số dư hiện tại gọn gàng, dòng thành viên chỉ hiển thị avatar, tên và số tiền */}
-        <section className="settlement-layout"><div className="panel balance-panel"><div className="panel-heading"><div><h2>Số dư hiện tại</h2></div></div><div className="balance-list">{calculationMembers.length ? calculationMembers.map((member) => { const amount = balances.get(member.id) ?? 0; return <div className="balance-row" key={member.id}><MemberAvatar member={member} index={ledger.members.indexOf(member)} /><span className="person-info"><strong>{member.name}</strong></span><strong className={`balance-amount ${amount > 0 ? 'positive' : amount < 0 ? 'negative' : ''}`}>{amount > 0 ? '+' : ''}{money(amount)}</strong></div>}) : <div className="empty-state compact"><p>{ledger.expenses.length ? 'Tất cả thành viên đã cân bằng số dư (0 đ).' : 'Chưa có thành viên phát sinh chi tiêu hoặc trả tiền.'}</p></div>}</div></div><SettlementSuggestionsPanel suggestions={suggestions} members={ledger.members} onRecord={(from, to, amount) => requestSettlementConfirmation(from, to, amount, ledger.periods.find((period) => period.status === 'open')?.id ?? '')} /></section>
-          {/* NOTE(VI): Lý do: Ẩn bớt lịch sử trả tiền ở menu quyết toán cho gọn, bấm nút Xem/Thu gọn mới xổ xuống
-              Trước: Lịch sử trả tiền luôn hiển thị đầy đủ làm trang bị dài
-              Sau: Mặc định ẩn, có nút xổ xuống (ChevronDown) kèm số lượng lần trả tiền; bấm vào để bung ra hoặc thu gọn
-              Test: Vào menu Quyết toán -> Kiểm tra phần Lịch sử trả tiền đang thu gọn -> bấm "Xem" thì xổ xuống danh sách -> bấm "Thu gọn" thì ẩn đi */}
-          <section className="panel full-panel">
-            <div
-              className="panel-heading"
-              style={{ cursor: 'pointer' }}
-              onClick={() => setShowSettlementHistory((open) => !open)}
-            >
-              <div>
-                <h2>Lịch sử trả tiền</h2>
-                <p>Các lần thành viên đã chuyển tiền cho nhau</p>
-              </div>
-              <div className="expense-panel-actions" onClick={(event) => event.stopPropagation()}>
-                {showSettlementHistory && (
-                  <button
-                    type="button"
-                    className={`filter-button ${showSettlementFilters ? 'active' : ''}`}
-                    aria-expanded={showSettlementFilters}
-                    onClick={() => setShowSettlementFilters((open) => !open)}
-                  >
-                    <Filter size={14} /> <span>Lọc</span>
-                    {hasSettlementFilter && (
-                      <span className="filter-badge">
-                        {Object.values(settlementFilters).filter(Boolean).length}
-                      </span>
-                    )}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className={`filter-button ${showSettlementHistory ? 'active' : ''}`}
-                  aria-expanded={showSettlementHistory}
-                  onClick={() => setShowSettlementHistory((open) => !open)}
-                  title={showSettlementHistory ? 'Thu gọn lịch sử' : 'Xem lịch sử trả tiền'}
-                >
-                  <ChevronDown
-                    size={14}
-                    style={{
-                      transform: showSettlementHistory ? 'rotate(180deg)' : 'none',
-                      transition: 'transform 0.2s ease',
-                    }}
-                  />
-                  <span>{showSettlementHistory ? 'Thu gọn' : 'Xem'}</span>
-                </button>
-              </div>
-            </div>
-            {showSettlementHistory && (
-              <>
-                {showSettlementFilters && (
-                  <div className="expense-filters">
-                    <div className="expense-filter-fields">
-                      <label>
-                        Từ ngày
-                        <input
-                          type="date"
-                          value={settlementFilters.fromDate}
-                          onChange={(event) => {
-                            setSettlementFilters({ ...settlementFilters, fromDate: event.target.value })
-                            setSettlementHistoryPage(1)
-                          }}
-                        />
-                      </label>
-                      <label>
-                        Đến ngày
-                        <input
-                          type="date"
-                          value={settlementFilters.toDate}
-                          onChange={(event) => {
-                            setSettlementFilters({ ...settlementFilters, toDate: event.target.value })
-                            setSettlementHistoryPage(1)
-                          }}
-                        />
-                      </label>
-                      <label>
-                        Thành viên
-                        <select
-                          value={settlementFilters.memberId}
-                          onChange={(event) => {
-                            setSettlementFilters({ ...settlementFilters, memberId: event.target.value })
-                            setSettlementHistoryPage(1)
-                          }}
-                        >
-                          <option value="">Tất cả thành viên</option>
-                          {ledger.members.map((member) => (
-                            <option key={member.id} value={member.id}>
-                              {member.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <div className="filters-footer">
-                      <span />
-                      <button
-                        disabled={!Object.values(settlementFilters).some(Boolean)}
-                        onClick={() => {
-                          setSettlementFilters({ fromDate: '', toDate: '', memberId: '' })
-                          setSettlementHistoryPage(1)
-                        }}
-                      >
-                        Xóa bộ lọc
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {filteredSettlements.length ? (
-                  <>
-                    <div className="settlement-history">
-                      {visibleSettlements.map((settlement) => {
-                        const from = ledger.members.find((member) => member.id === settlement.fromMemberId)
-                        const to = ledger.members.find((member) => member.id === settlement.toMemberId)
-                        return (
-                          <div className="history-row" key={settlement.id}>
-                            <button
-                              type="button"
-                              className="history-icon history-delete-button"
-                              aria-label="Xóa khoản trả tiền"
-                              title="Xóa khoản trả tiền"
-                              onClick={() => setPendingSettlementDelete(settlement)}
-                            >
-                              <Check size={16} />
-                            </button>
-                            <div>
-                              <strong>
-                                {from?.name} đã trả cho {to?.name}
-                              </strong>
-                              <small>
-                                {formatDate(settlement.date)}
-                                {settlement.note && ` · ${settlement.note}`}
-                              </small>
-                            </div>
-                            <strong>{money(settlement.amount)}</strong>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    <PaginationControls
-                      page={safeSettlementPage}
-                      pageCount={settlementPageCount}
-                      total={displaySettlements.length}
-                      onPageChange={setSettlementHistoryPage}
-                    />
-                    {!hasSettlementFilter && orderedSettlements.length > 30 && (
-                      <p style={{ textAlign: 'center', fontSize: '11.5px', color: '#666e66', margin: '8px 0 2px' }}>
-                        Hiển thị 2 trang gần nhất. Dùng bộ lọc để xem các khoản cũ hơn.
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <div className="empty-state compact">
-                    <p>
-                      {periodSettlements.length
-                        ? 'Không tìm thấy giao dịch phù hợp với bộ lọc.'
-                        : 'Chưa có lần trả tiền nào.'}
-                    </p>
-                  </div>
-                )}
-              </>
-            )}
-          </section></>}
+          </section>
 
       </div>
     </main>
@@ -967,38 +869,50 @@ export default function App() {
       }}
       onLogout={() => { setShowAccount(false); void signOut() }}
     />}
-    <nav className="mobile-nav">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={18} /><span>{label}</span></button>)}</nav>
-  </div>
-    {/* NOTE(VI): Lý do: Xóa bỏ hoàn toàn nút ghi nhận trả tiền thủ công, đưa nút Chốt sổ xuống góc phải bên dưới thay thế
-        Trước: Tab Chốt sổ có nút nổi "+ Ghi nhận trả tiền" mở modal nhập tay thừa thãi
-        Sau: Tab Khoản chi có nút nổi "+ Thêm khoản chi"; Tab Chốt sổ có nút nổi "Chốt sổ" (kèm icon LockKeyhole)
-        Test: Vào tab Chốt sổ -> Nút nổi góc phải hiện "Chốt sổ"; bấm vào mở popup xác nhận chốt sổ */}
-    {page === 'expenses' ? (
-      <button
-        type="button"
-        className="button primary floating-add-expense"
-        aria-label="Thêm khoản chi"
-        title="Thêm khoản chi"
-        onClick={() => {
-          setEditing(null)
-          setModal('expense')
+    {showSettlementHistoryModal && (
+      <SettlementHistoryModal
+        members={ledger.members}
+        settlements={periodSettlements}
+        filteredSettlements={filteredSettlements}
+        visibleSettlements={visibleSettlements}
+        displaySettlements={displaySettlements}
+        safeSettlementPage={safeSettlementPage}
+        settlementPageCount={settlementPageCount}
+        hasSettlementFilter={hasSettlementFilter}
+        settlementFilters={settlementFilters}
+        showSettlementFilters={showSettlementFilters}
+        onToggleFilters={() => setShowSettlementFilters((open) => !open)}
+        onFilterChange={(filters) => {
+          setSettlementFilters(filters)
+          setSettlementHistoryPage(1)
         }}
-      >
-        <Plus size={18} />
-        <span>Thêm khoản chi</span>
-      </button>
-    ) : selectedPeriod?.status === 'open' ? (
-      <button
-        type="button"
-        className="button primary floating-add-expense"
-        aria-label="Chốt sổ kỳ này"
-        title="Chốt sổ kỳ này"
-        onClick={() => setShowClosePeriodConfirm(true)}
-      >
-        <LockKeyhole size={17} />
-        <span>Chốt sổ kỳ này</span>
-      </button>
-    ) : null}
+        onClearFilters={() => {
+          setSettlementFilters({ fromDate: '', toDate: '', memberId: '' })
+          setSettlementHistoryPage(1)
+        }}
+        onPageChange={setSettlementHistoryPage}
+        onDeleteSettlement={(settlement) => setPendingSettlementDelete(settlement)}
+        onClose={() => setShowSettlementHistoryModal(false)}
+      />
+    )}
+  </div>
+    {/* NOTE(VI): Lý do: Gộp menu Chốt sổ vào màn hình chính nên nút nổi chỉ dành cho chức năng Thêm khoản chi; nút Chốt sổ đã đưa vào vùng kỳ hiện tại
+        Trước: Đổi nút nổi giữa Thêm khoản chi và Chốt sổ theo tab
+        Sau: Luôn hiển thị nút Thêm khoản chi ở góc dưới phải
+        Test: Kiểm tra góc dưới phải luôn hiển thị nút Thêm khoản chi */}
+    <button
+      type="button"
+      className="button primary floating-add-expense"
+      aria-label="Thêm khoản chi"
+      title="Thêm khoản chi"
+      onClick={() => {
+        setEditing(null)
+        setModal('expense')
+      }}
+    >
+      <Plus size={18} />
+      <span>Thêm khoản chi</span>
+    </button>
     {toastMessage && (
       <div className="toast-notification" role="status" aria-live="polite">
         <span className="toast-icon"><Check size={14} strokeWidth={2.8} /></span>
@@ -1155,13 +1069,79 @@ function CurrentMoneyOverview({ members, balances }: { members: Member[]; balanc
   </section>
 }
 
-function SettlementSuggestionsPanel({ suggestions, members, onRecord, inline = false }: { suggestions: ReturnType<typeof suggestSettlements>; members: Member[]; onRecord: (fromId: string, toId: string, amount: number) => void; inline?: boolean }) {
+// NOTE(VI): Lý do: Bổ sung bóc tách nợ cũ và nợ mới vào text sao chép và UI dòng gợi ý chuyển tiền theo yêu cầu người dùng
+// Trước: Chỉ hiển thị số tiền gộp chung, không biết nợ cũ bao nhiêu nợ mới bao nhiêu
+// Sau: Tự động phân tích và gắn ghi chú (Kỳ cũ còn X, kỳ này Y) hoặc (Kỳ này Y - Đã trừ X kỳ trước), hỗ trợ cả khi copy và hiển thị trên giao diện
+// Test: Tạo kỳ có thành viên nợ dồn kỳ cũ -> thấy dòng chú thích dưới tên trên UI và trong text khi bấm Sao chép
+function SettlementSuggestionsPanel({
+  suggestions,
+  members,
+  ledger,
+  onRecord,
+  groupName: _groupName,
+  inline = false,
+}: {
+  suggestions: ReturnType<typeof suggestSettlements>
+  members: Member[]
+  ledger: Ledger
+  onRecord: (fromId: string, toId: string, amount: number) => void
+  groupName?: string
+  inline?: boolean
+}) {
+  const [copied, setCopied] = useState(false)
+
+  const suggestionText = useMemo(() => {
+    if (!suggestions.length) return ''
+    return suggestions
+      .map((s) => {
+        const from = members.find((m) => m.id === s.fromMemberId)?.name ?? 'Thành viên'
+        const to = members.find((m) => m.id === s.toMemberId)?.name ?? 'Thành viên'
+        const breakdown = getMemberDebtBreakdown(ledger, s.fromMemberId)
+        const noteStr = breakdown.note ? ` (${breakdown.note})` : ''
+        return `${from} trả ${to}: ${money(s.amount)}${noteStr}`
+      })
+      .join('\n')
+  }, [suggestions, members, ledger])
+
+  async function copySuggestions() {
+    if (!suggestionText) return
+    try {
+      await navigator.clipboard.writeText(suggestionText)
+      setCopied(true)
+    } catch {
+      const textArea = document.createElement('textarea')
+      textArea.value = suggestionText
+      textArea.style.position = 'fixed'
+      textArea.style.opacity = '0'
+      document.body.appendChild(textArea)
+      textArea.select()
+      const success = document.execCommand('copy')
+      textArea.remove()
+      setCopied(success)
+    }
+    window.setTimeout(() => setCopied(false), 2200)
+  }
+
   return <div className={`panel ${inline ? 'inline-suggestions-panel' : ''}`}>
-    <div className="panel-heading"><div><h2>Gợi ý chuyển tiền</h2></div></div>
+    <div className="panel-heading">
+      <h2>Gợi ý chuyển tiền</h2>
+      {suggestions.length > 0 && (
+        <button
+          type="button"
+          className={`filter-button ${copied ? 'active' : ''}`}
+          onClick={() => void copySuggestions()}
+          title="Sao chép nội dung chuyển tiền để gửi vào nhóm chat"
+        >
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+          <span>{copied ? 'Đã chép' : 'Sao chép'}</span>
+        </button>
+      )}
+    </div>
     {suggestions.length ? <div className="suggestion-list">{suggestions.map((suggestion) => {
       const from = members.find((member) => member.id === suggestion.fromMemberId)
       const to = members.find((member) => member.id === suggestion.toMemberId)
       if (!from || !to) return null
+      const breakdown = getMemberDebtBreakdown(ledger, from.id)
       return <div className="suggestion-row" key={`${from.id}-${to.id}`}>
         {/* NOTE(VI): Lý do: Đổi "chuyển cho" thành "trả" và đặt icon avatar người nhận ngay trước tên người nhận
             Trước: (Avatar from) Kha chuyển cho Thương (Avatar to ở cuối)
@@ -1176,6 +1156,7 @@ function SettlementSuggestionsPanel({ suggestions, members, onRecord, inline = f
         </div>
         <strong>{money(suggestion.amount)}</strong>
         <button className="button small-button" onClick={() => onRecord(from.id, to.id, suggestion.amount)}><Check size={14} /> Đã trả</button>
+        {breakdown.note && <div className="suggestion-debt-note">{breakdown.note}</div>}
       </div>
     })}</div> : <div className="empty-state compact"><div className="empty-icon"><Check size={20} /></div><strong>Sổ đang cân bằng</strong><p>Không còn khoản nào cần chốt sổ.</p></div>}
   </div>
@@ -1305,6 +1286,176 @@ function ConfirmClosePeriodModal({
         </button>
         <button type="button" className="button primary" disabled={closing} onClick={() => void confirm()}>
           <LockKeyhole size={15} /> {closing ? 'Đang chốt...' : 'Xác nhận chốt sổ'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// NOTE(VI): Lý do: Đưa Lịch sử trả tiền vào popup Modal riêng theo yêu cầu người dùng khi gộp menu Chốt sổ vào màn hình chính
+// Trước: Lịch sử trả tiền nằm trực tiếp ở trang Quyết toán/Chốt sổ
+// Sau: Mở dạng modal khi bấm nút "Xem lịch sử trả tiền" trong vùng kỳ hiện tại; giữ nguyên toàn bộ bộ lọc, phân trang và nút xóa giao dịch
+// Test: Bấm nút "Xem lịch sử trả tiền" -> modal mở lên -> kiểm tra danh sách, lật trang, bộ lọc và xóa giao dịch hoạt động chuẩn
+function SettlementHistoryModal({
+  members,
+  settlements,
+  filteredSettlements,
+  visibleSettlements,
+  displaySettlements,
+  safeSettlementPage,
+  settlementPageCount,
+  hasSettlementFilter,
+  settlementFilters,
+  showSettlementFilters,
+  onToggleFilters,
+  onFilterChange,
+  onClearFilters,
+  onPageChange,
+  onDeleteSettlement,
+  onClose,
+}: {
+  members: Member[]
+  settlements: Settlement[]
+  filteredSettlements: Settlement[]
+  visibleSettlements: Settlement[]
+  displaySettlements: Settlement[]
+  safeSettlementPage: number
+  settlementPageCount: number
+  hasSettlementFilter: boolean
+  settlementFilters: { fromDate: string; toDate: string; memberId: string }
+  showSettlementFilters: boolean
+  onToggleFilters: () => void
+  onFilterChange: (filters: { fromDate: string; toDate: string; memberId: string }) => void
+  onClearFilters: () => void
+  onPageChange: (page: number) => void
+  onDeleteSettlement: (settlement: Settlement) => void
+  onClose: () => void
+}) {
+  return (
+    <Modal
+      centered
+      wide
+      eyebrow="SỔ CHI TIÊU NHÓM"
+      title="Lịch sử trả tiền"
+      subtitle="Các lần thành viên đã chuyển tiền cho nhau"
+      onClose={onClose}
+    >
+      <div style={{ display: 'grid', gap: '10px', padding: '4px 0 16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
+          <button
+            type="button"
+            className={`filter-button ${showSettlementFilters ? 'active' : ''}`}
+            aria-expanded={showSettlementFilters}
+            onClick={onToggleFilters}
+          >
+            <Filter size={14} /> <span>Lọc</span>
+            {hasSettlementFilter && (
+              <span className="filter-badge">
+                {Object.values(settlementFilters).filter(Boolean).length}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {showSettlementFilters && (
+          <div className="expense-filters">
+            <div className="expense-filter-fields">
+              <label>
+                Từ ngày
+                <input
+                  type="date"
+                  value={settlementFilters.fromDate}
+                  onChange={(event) => onFilterChange({ ...settlementFilters, fromDate: event.target.value })}
+                />
+              </label>
+              <label>
+                Đến ngày
+                <input
+                  type="date"
+                  value={settlementFilters.toDate}
+                  onChange={(event) => onFilterChange({ ...settlementFilters, toDate: event.target.value })}
+                />
+              </label>
+              <label>
+                Thành viên
+                <select
+                  value={settlementFilters.memberId}
+                  onChange={(event) => onFilterChange({ ...settlementFilters, memberId: event.target.value })}
+                >
+                  <option value="">Tất cả thành viên</option>
+                  {members.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="filters-footer">
+              <span />
+              <button disabled={!hasSettlementFilter} onClick={onClearFilters}>
+                Xóa bộ lọc
+              </button>
+            </div>
+          </div>
+        )}
+
+        {filteredSettlements.length ? (
+          <>
+            <div className="settlement-history">
+              {visibleSettlements.map((settlement) => {
+                const from = members.find((member) => member.id === settlement.fromMemberId)
+                const to = members.find((member) => member.id === settlement.toMemberId)
+                return (
+                  <div className="history-row" key={settlement.id}>
+                    <button
+                      type="button"
+                      className="history-icon history-delete-button"
+                      aria-label="Xóa khoản trả tiền"
+                      title="Xóa khoản trả tiền"
+                      onClick={() => onDeleteSettlement(settlement)}
+                    >
+                      <Check size={16} />
+                    </button>
+                    <div>
+                      <strong>
+                        {from?.name} đã trả cho {to?.name}
+                      </strong>
+                      <small>
+                        {formatDate(settlement.date)}
+                        {settlement.note && ` · ${settlement.note}`}
+                      </small>
+                    </div>
+                    <strong>{money(settlement.amount)}</strong>
+                  </div>
+                )
+              })}
+            </div>
+            <PaginationControls
+              page={safeSettlementPage}
+              pageCount={settlementPageCount}
+              total={displaySettlements.length}
+              onPageChange={onPageChange}
+            />
+            {!hasSettlementFilter && settlements.length > 30 && (
+              <p style={{ textAlign: 'center', fontSize: '11.5px', color: '#666e66', margin: '8px 0 2px' }}>
+                Hiển thị 2 trang gần nhất. Dùng bộ lọc để xem các khoản cũ hơn.
+              </p>
+            )}
+          </>
+        ) : (
+          <div className="empty-state compact">
+            <p>
+              {settlements.length
+                ? 'Không tìm thấy giao dịch phù hợp với bộ lọc.'
+                : 'Chưa có lần trả tiền nào.'}
+            </p>
+          </div>
+        )}
+      </div>
+      <div className="modal-actions">
+        <button type="button" className="button secondary full" onClick={onClose}>
+          Đóng
         </button>
       </div>
     </Modal>
@@ -1864,7 +2015,11 @@ function ExpenseModal({
   // Test: Bấm "Thêm khoản chi" -> Nút "Chia đều" sáng xanh, phần nhập tùy chỉnh/phần trăm bị ẩn
   const [splitMode, setSplitMode] = useState<'equal' | 'custom'>(initial ? (initial.splitMode === 'equal' ? 'equal' : 'custom') : 'equal')
   const [custom, setCustom] = useState<Record<string, string>>(Object.fromEntries(initial?.splits.map((item) => [item.memberId, String(item.amount)]) ?? []))
-  const [splitByPercent, setSplitByPercent] = useState(() => initial ? initial.splitMode === 'percent' : false)
+  // NOTE(VI): Lý do: Mặc định chọn chia theo % khi tùy chỉnh số tiền theo yêu cầu người dùng
+  // Trước: const [splitByPercent, setSplitByPercent] = useState(() => initial ? initial.splitMode === 'percent' : false) -> false khi tạo mới
+  // Sau: useState(() => initial ? initial.splitMode === 'percent' : true) -> true khi tạo mới
+  // Test: Bấm "Thêm khoản chi" -> chuyển sang "Tùy chỉnh số tiền" -> Nút gạt "Chia theo %" ở trạng thái bật ON sẵn
+  const [splitByPercent, setSplitByPercent] = useState(() => initial ? initial.splitMode === 'percent' : true)
   const [percentages, setPercentages] = useState<Record<string, string>>(() => {
     const splits = initial?.splits ?? []
     if (!initial || initial.amount <= 0 || !splits.length) return {}
@@ -1920,7 +2075,7 @@ function ExpenseModal({
     <div className="form-label-row"><span>Chia cho ai?</span><button type="button" className="text-button inline" onClick={selectAllMembers}>{selected.length === members.length ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}</button></div>
     <div className="member-chips">{members.map((member, index) => <button type="button" key={member.id} className={`member-chip ${selected.includes(member.id) ? 'selected' : ''}`} onClick={() => toggleMember(member.id)}><MemberAvatar member={member} index={index} className="tiny" />{member.name}{selected.includes(member.id) && <Check size={13} />}</button>)}</div>
     <div className="split-toggle"><button type="button" className={splitMode === 'equal' ? 'selected' : ''} onClick={() => setSplitMode('equal')}>Chia đều</button><button type="button" className={splitMode === 'custom' ? 'selected' : ''} onClick={() => setSplitMode('custom')}>Tùy chỉnh số tiền</button></div>
-    {splitMode === 'custom' && <div className="custom-splits"><div className="custom-splits-header"><label className="percentage-toggle"><input type="checkbox" checked={splitByPercent} onChange={(event) => setSplitByPercent(event.target.checked)} /><span>Chia theo %</span></label>{splitByPercent && <small>Tổng phải bằng 100%</small>}</div>{members.filter((member) => selected.includes(member.id)).map((member) => {
+    {splitMode === 'custom' && <div className="custom-splits"><div className="custom-splits-header"><label className="percentage-toggle ios-switch-wrap"><input type="checkbox" className="ios-switch-input" checked={splitByPercent} onChange={(event) => setSplitByPercent(event.target.checked)} /><span className="ios-switch-slider" aria-hidden="true" /><span className="percentage-toggle-label">Chia theo %</span></label>{splitByPercent && <small>Tổng phải bằng 100%</small>}</div>{members.filter((member) => selected.includes(member.id)).map((member) => {
       const splitAmount = percentSplits.find((item) => item.memberId === member.id)?.amount ?? 0
       return <label className="custom-split-row" key={member.id}><span>{member.name}</span>{splitByPercent ? <span className="split-input-pair"><input aria-label={`Tỷ lệ chia của ${member.name}`} inputMode="decimal" placeholder="%" value={percentages[member.id] ?? ''} onChange={(event) => setPercent(member.id, event.target.value)} /><input aria-label={`Số tiền của ${member.name}`} placeholder="VND" value={numericAmount ? new Intl.NumberFormat('vi-VN').format(splitAmount) : ''} readOnly /></span> : <input className="custom-amount-input" aria-label={`Số tiền của ${member.name}`} inputMode="numeric" placeholder="VND" value={custom[member.id] ? new Intl.NumberFormat('vi-VN').format(Number(custom[member.id].replace(/[,.\s]/g, ''))) : ''} onChange={(event) => setCustom({ ...custom, [member.id]: event.target.value.replace(/\D/g, '') })} />}</label>
     })}</div>}
