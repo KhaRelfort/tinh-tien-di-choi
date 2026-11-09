@@ -169,8 +169,8 @@ body{background:#e8e9e4}
 .conflict-banner>span{flex-basis:100%}
 .conflict-actions{width:100%}
 .conflict-actions button{font-size:8px}
-.modal-backdrop{align-items:end;padding:0;z-index:60}
-.modal-card{width:min(100%,430px);max-height:min(91dvh,850px);padding:19px 16px calc(17px + env(safe-area-inset-bottom,0px));border-radius:19px 19px 0 0}
+.modal-backdrop{align-items:end;padding:0;z-index:60;overscroll-behavior:contain}
+.modal-card{width:min(100%,430px);max-height:min(91dvh,850px);padding:19px 16px calc(17px + env(safe-area-inset-bottom,0px));border-radius:19px 19px 0 0;overscroll-behavior:contain}
 .modal-heading h2{font-size:17px}
 .modal-heading p{font-size:12.5px}
 .expense-form{gap:12px}

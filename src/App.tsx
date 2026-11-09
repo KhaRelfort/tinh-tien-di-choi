@@ -1930,7 +1930,45 @@ function ExpenseModal({
   </form></Modal>
 }
 
+// NOTE(VI): Lý do: Khóa cuộn nội dung nền (background scroll lock) khi mở popup theo yêu cầu người dùng
+// Trước: Chỉ gán document.body.style.overflow = 'hidden', không khóa documentElement (html) và không chặn cuộn touch/wheel trên backdrop nên trang bên dưới vẫn bị cuộn
+// Sau: Khóa cả html và body (overflow: hidden), chặn sự kiện wheel/touchmove trên backdrop, thêm overscroll-behavior: contain
+// Test: Mở bất kỳ popup nào (Thêm khoản chi, In bill, Tài khoản, Xác nhận) -> vuốt hoặc cuộn chuột trên backdrop không bị cuộn trang phía dưới; nội dung bên trong popup vẫn cuộn bình thường
 function Modal({ title, subtitle, onClose, children, centered = false, wide = false, eyebrow = 'SỔ CHI TIÊU NHÓM', className = '' }: { title: string; subtitle: string; onClose: () => void; children: React.ReactNode; centered?: boolean; wide?: boolean; eyebrow?: string | null; className?: string }) {
-  useEffect(() => { const handler = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }; window.addEventListener('keydown', handler); document.body.style.overflow = 'hidden'; return () => { window.removeEventListener('keydown', handler); document.body.style.overflow = '' } }, [onClose])
-  return <div className={`modal-backdrop ${centered ? 'centered-backdrop' : ''} ${className}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className={`modal-card ${centered ? 'centered-modal' : ''} ${wide ? 'wide-modal' : ''}`}><div className="modal-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} aria-label="Đóng"><X size={18} /></button></div>{children}</section></div>
+  const backdropRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+
+    const prevBodyOverflow = document.body.style.overflow
+    const prevHtmlOverflow = document.documentElement.style.overflow
+
+    document.body.style.overflow = 'hidden'
+    document.documentElement.style.overflow = 'hidden'
+
+    const backdrop = backdropRef.current
+    const preventBackdropScroll = (e: Event) => {
+      if (e.target === backdrop) {
+        e.preventDefault()
+      }
+    }
+
+    if (backdrop) {
+      backdrop.addEventListener('wheel', preventBackdropScroll, { passive: false })
+      backdrop.addEventListener('touchmove', preventBackdropScroll, { passive: false })
+    }
+
+    return () => {
+      window.removeEventListener('keydown', handler)
+      document.body.style.overflow = prevBodyOverflow
+      document.documentElement.style.overflow = prevHtmlOverflow
+      if (backdrop) {
+        backdrop.removeEventListener('wheel', preventBackdropScroll)
+        backdrop.removeEventListener('touchmove', preventBackdropScroll)
+      }
+    }
+  }, [onClose])
+
+  return <div ref={backdropRef} className={`modal-backdrop ${centered ? 'centered-backdrop' : ''} ${className}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className={`modal-card ${centered ? 'centered-modal' : ''} ${wide ? 'wide-modal' : ''}`}><div className="modal-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} aria-label="Đóng"><X size={18} /></button></div>{children}</section></div>
 }
