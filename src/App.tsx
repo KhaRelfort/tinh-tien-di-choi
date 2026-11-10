@@ -2085,45 +2085,120 @@ function ExpenseModal({
   </form></Modal>
 }
 
-// NOTE(VI): Lý do: Khóa cuộn nội dung nền (background scroll lock) khi mở popup theo yêu cầu người dùng
-// Trước: Chỉ gán document.body.style.overflow = 'hidden', không khóa documentElement (html) và không chặn cuộn touch/wheel trên backdrop nên trang bên dưới vẫn bị cuộn
-// Sau: Khóa cả html và body (overflow: hidden), chặn sự kiện wheel/touchmove trên backdrop, thêm overscroll-behavior: contain
-// Test: Mở bất kỳ popup nào (Thêm khoản chi, In bill, Tài khoản, Xác nhận) -> vuốt hoặc cuộn chuột trên backdrop không bị cuộn trang phía dưới; nội dung bên trong popup vẫn cuộn bình thường
+// NOTE(VI): Lý do: Khóa triệt để cuộn nội dung nền (background scroll lock) trên iPhone/mobile khi mở popup
+// Trước: Chỉ gán overflow: hidden cho body/html (bị iOS Safari bỏ qua) và chỉ chặn touchmove khi e.target === backdrop nên vuốt trên popup vẫn làm cuộn trang bên dưới, cộng thêm dependency [onClose] làm effect chạy lại mỗi lần render
+// Sau: Cố định body bằng position: fixed tại vị trí scrollY hiện tại (kèm bộ đếm activeModalLockCount), kết hợp chặn touchmove/wheel xuyên thấu khi chạm ngoài vùng cuộn hoặc chạm tới biên trên/dưới của popup
+// Test: Mở bất kỳ popup nào trên điện thoại -> vuốt ngoài backdrop hoặc vuốt bên trong popup đều khóa cứng nền bên dưới; đóng popup trả lại đúng vị trí cuộn cũ
+let activeModalLockCount = 0
+let lockedWindowScrollY = 0
+
 function Modal({ title, subtitle, onClose, children, centered = false, wide = false, eyebrow = 'SỔ CHI TIÊU NHÓM', className = '' }: { title: string; subtitle: string; onClose: () => void; children: React.ReactNode; centered?: boolean; wide?: boolean; eyebrow?: string | null; className?: string }) {
   const backdropRef = useRef<HTMLDivElement>(null)
+  const cardRef = useRef<HTMLElement>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
 
   useEffect(() => {
-    const handler = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    const handler = (event: KeyboardEvent) => { if (event.key === 'Escape') onCloseRef.current() }
     window.addEventListener('keydown', handler)
 
-    const prevBodyOverflow = document.body.style.overflow
-    const prevHtmlOverflow = document.documentElement.style.overflow
-
-    document.body.style.overflow = 'hidden'
-    document.documentElement.style.overflow = 'hidden'
+    if (activeModalLockCount === 0) {
+      lockedWindowScrollY = window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0
+      document.documentElement.style.overflow = 'hidden'
+      document.documentElement.style.overscrollBehavior = 'none'
+      document.body.style.overflow = 'hidden'
+      document.body.style.overscrollBehavior = 'none'
+      document.body.style.position = 'fixed'
+      document.body.style.top = `-${lockedWindowScrollY}px`
+      document.body.style.left = '0'
+      document.body.style.right = '0'
+      document.body.style.width = '100%'
+    }
+    activeModalLockCount += 1
 
     const backdrop = backdropRef.current
-    const preventBackdropScroll = (e: Event) => {
-      if (e.target === backdrop) {
-        e.preventDefault()
+    let lastTouchY = 0
+
+    const findScrollableParent = (target: EventTarget | null): HTMLElement | null => {
+      const card = cardRef.current
+      if (!card || !(target instanceof HTMLElement) || !card.contains(target)) return null
+      let el: HTMLElement | null = target
+      while (el && el !== card.parentElement) {
+        if (el.scrollHeight > el.clientHeight + 1) {
+          const style = window.getComputedStyle(el)
+          if (style.overflowY === 'auto' || style.overflowY === 'scroll' || el.tagName === 'TEXTAREA') {
+            return el
+          }
+        }
+        el = el.parentElement
+      }
+      return null
+    }
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        lastTouchY = e.touches[0].clientY
+      }
+    }
+
+    const handleTouchMove = (e: TouchEvent) => {
+      const scrollable = findScrollableParent(e.target)
+      if (!scrollable) {
+        if (e.cancelable) e.preventDefault()
+        return
+      }
+      if (e.touches.length !== 1) return
+      const currentY = e.touches[0].clientY
+      const deltaY = currentY - lastTouchY
+      lastTouchY = currentY
+      const atTop = scrollable.scrollTop <= 0
+      const atBottom = scrollable.scrollTop + scrollable.clientHeight >= scrollable.scrollHeight - 1
+      if ((deltaY > 0 && atTop) || (deltaY < 0 && atBottom)) {
+        if (e.cancelable) e.preventDefault()
+      }
+    }
+
+    const handleWheel = (e: WheelEvent) => {
+      const scrollable = findScrollableParent(e.target)
+      if (!scrollable) {
+        if (e.cancelable) e.preventDefault()
+        return
+      }
+      const atTop = scrollable.scrollTop <= 0
+      const atBottom = scrollable.scrollTop + scrollable.clientHeight >= scrollable.scrollHeight - 1
+      if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) {
+        if (e.cancelable) e.preventDefault()
       }
     }
 
     if (backdrop) {
-      backdrop.addEventListener('wheel', preventBackdropScroll, { passive: false })
-      backdrop.addEventListener('touchmove', preventBackdropScroll, { passive: false })
+      backdrop.addEventListener('touchstart', handleTouchStart, { passive: true })
+      backdrop.addEventListener('touchmove', handleTouchMove, { passive: false })
+      backdrop.addEventListener('wheel', handleWheel, { passive: false })
     }
 
     return () => {
       window.removeEventListener('keydown', handler)
-      document.body.style.overflow = prevBodyOverflow
-      document.documentElement.style.overflow = prevHtmlOverflow
       if (backdrop) {
-        backdrop.removeEventListener('wheel', preventBackdropScroll)
-        backdrop.removeEventListener('touchmove', preventBackdropScroll)
+        backdrop.removeEventListener('touchstart', handleTouchStart)
+        backdrop.removeEventListener('touchmove', handleTouchMove)
+        backdrop.removeEventListener('wheel', handleWheel)
+      }
+      activeModalLockCount = Math.max(0, activeModalLockCount - 1)
+      if (activeModalLockCount === 0) {
+        document.documentElement.style.overflow = ''
+        document.documentElement.style.overscrollBehavior = ''
+        document.body.style.overflow = ''
+        document.body.style.overscrollBehavior = ''
+        document.body.style.position = ''
+        document.body.style.top = ''
+        document.body.style.left = ''
+        document.body.style.right = ''
+        document.body.style.width = ''
+        window.scrollTo(0, lockedWindowScrollY)
       }
     }
-  }, [onClose])
+  }, [])
 
-  return <div ref={backdropRef} className={`modal-backdrop ${centered ? 'centered-backdrop' : ''} ${className}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className={`modal-card ${centered ? 'centered-modal' : ''} ${wide ? 'wide-modal' : ''}`}><div className="modal-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} aria-label="Đóng"><X size={18} /></button></div>{children}</section></div>
+  return <div ref={backdropRef} className={`modal-backdrop ${centered ? 'centered-backdrop' : ''} ${className}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section ref={cardRef} className={`modal-card ${centered ? 'centered-modal' : ''} ${wide ? 'wide-modal' : ''}`}><div className="modal-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} aria-label="Đóng"><X size={18} /></button></div>{children}</section></div>
 }

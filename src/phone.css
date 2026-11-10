@@ -1,3 +1,9 @@
+/* NOTE(VI): Lý do: Ẩn thanh cuộn dọc bên phải màn hình và trong các popup khi cuộn theo yêu cầu người dùng
+   Trước: Hiện thanh cuộn dọc mặc định của trình duyệt khi cuộn danh sách hoặc cuộn popup
+   Sau: Ẩn hoàn toàn scrollbar bằng scrollbar-width: none và ::-webkit-scrollbar { display: none }, vẫn giữ nguyên thao tác cuộn mượt
+   Test: Cuộn trang chính hoặc cuộn trong popup -> không thấy thanh cuộn dọc bên phải màn hình */
+*,*::before,*::after,html,body{scrollbar-width:none;-ms-overflow-style:none}
+*::-webkit-scrollbar,html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0;background:transparent}
 html,body,#root{min-height:100%;min-height:-webkit-fill-available;width:100%;background:#f6f5f1}
 :root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","DM Sans",sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
 h1,h2,h3,strong{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Manrope,sans-serif}
@@ -171,12 +177,12 @@ body{background:#f6f5f1}
 .conflict-banner>span{flex-basis:100%}
 .conflict-actions{width:100%}
 .conflict-actions button{font-size:8px}
-/* NOTE(VI): Lý do: Giảm bớt khoảng cách viền 2 bên của popup trên iPhone theo yêu cầu người dùng để tăng tối đa không gian hiển thị nội dung
-   Trước: Backdrop padding 16px, thẻ modal padding 18-19px làm mất gần 70px chiều ngang màn hình
-   Sau: Backdrop padding 6px (sát viền hơn), thẻ modal padding 12px (mở rộng thêm hơn 30px chiều ngang cho nội dung)
-   Test: Mở popup Thêm khoản chi, In bill, Tài khoản trên iPhone -> Popup rộng rãi, các ô nhập và bảng số liệu thoáng đãng hơn hẳn */
-.modal-backdrop{display:flex;align-items:center;justify-content:center;padding:14px 6px;z-index:60;overscroll-behavior:contain}
-.modal-card{width:min(calc(100% - 12px),424px);max-height:min(88dvh,750px);padding:18px 12px;border-radius:16px;overscroll-behavior:contain;margin:auto}
+/* NOTE(VI): Lý do: Giảm bớt padding lề 2 bên trái/phải của popup và khóa cuộn backdrop theo yêu cầu người dùng
+   Trước: Backdrop padding 6px nhưng modal-card dùng calc(100% - 12px) bị trừ kép thành lề 12px mỗi bên, padding trong 12px; backdrop còn overflow-y: auto
+   Sau: Backdrop padding 12px 6px (overflow: hidden, touch-action: none), modal-card width 100% (chỉ cách mép màn hình 6px) và giảm padding trong trái/phải xuống 10px
+   Test: Mở các popup trên điện thoại -> Popup mở rộng sát 2 mép màn hình hơn, nội dung bên trong rộng rãi, vuốt không cuộn nền */
+.modal-backdrop{display:flex;align-items:center;justify-content:center;padding:12px 6px;z-index:60;overflow:hidden;overscroll-behavior:none;touch-action:none}
+.modal-card{width:100%;max-width:420px;max-height:min(88dvh,750px);padding:16px 10px;border-radius:16px;overscroll-behavior:contain;touch-action:pan-y;margin:auto}
 .modal-heading h2{font-size:17px}
 .modal-heading p{font-size:12.5px}
 .expense-form{gap:12px}
@@ -199,14 +205,14 @@ body{background:#f6f5f1}
 .confirm-settlement-content p{margin:3px 0 0;color:#737b73;font-size:11px}
 .confirm-settlement-content p strong{color:#303a32}
 .confirm-settlement-content>b{font:800 21px Manrope,sans-serif;color:#287b5d;letter-spacing:-.5px}
-.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:14px 6px}
-.centered-modal{width:min(calc(100% - 12px),410px);max-height:min(88dvh,720px);padding:18px 12px;border-radius:16px;margin:auto}
-.centered-modal .modal-heading{position:relative;justify-content:center;text-align:center;padding:0 24px}
+.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:12px 6px}
+.centered-modal{width:100%;max-width:420px;max-height:min(88dvh,740px);padding:16px 10px;border-radius:16px;margin:auto}
+.centered-modal .modal-heading{position:relative;justify-content:center;text-align:center;padding:0 22px}
 .centered-modal .modal-heading>div{width:100%}
-.centered-modal .modal-heading .icon-button{position:absolute;right:-4px;top:-6px}
+.centered-modal .modal-heading .icon-button{position:absolute;right:-2px;top:-6px}
 .centered-modal .modal-heading .eyebrow{margin-left:auto;margin-right:auto}
 .centered-modal .modal-actions{justify-content:center}
-.wide-modal{width:min(calc(100% - 12px),430px)}
+.wide-modal{width:100%;max-width:420px}
 .form-label-row{font-size:13px;font-weight:700;color:#596159;margin-bottom:-2px}
 .form-label-row .text-button{font-size:12.5px;font-weight:700}
 /* NOTE(VI): Lý do: Nâng cấp UI popup Thêm khoản chi theo yêu cầu:
@@ -336,8 +342,8 @@ body{background:#f6f5f1}
   .topbar{height:calc(56px + env(safe-area-inset-top,0px));padding:env(safe-area-inset-top,0px) 15px 0}
   .content{padding:18px 15px calc(42px + env(safe-area-inset-bottom,0px))}
   .mobile-nav{display:none!important}
-  .modal-backdrop,.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:14px 6px}
-  .modal-card,.centered-modal{margin:auto;border-radius:16px;width:min(calc(100% - 12px),424px);max-height:min(88dvh,740px);padding:18px 12px}
-  .centered-modal .modal-heading .icon-button{right:-4px}
+  .modal-backdrop,.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:12px 6px;overflow:hidden}
+  .modal-card,.centered-modal,.wide-modal{margin:auto;border-radius:16px;width:100%;max-width:100%;max-height:min(88dvh,740px);padding:16px 10px}
+  .centered-modal .modal-heading .icon-button{right:-2px}
 }
 
