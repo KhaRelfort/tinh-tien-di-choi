@@ -9,7 +9,7 @@ import {
   equalSplits, getBalances, getMemberDebtBreakdown, getUnpaidTotal, makeDemoLedger, makeId, memberColor, money, normalizeLedger,
   markClosedPeriodsSettled, suggestSettlements, today, type Expense, type Ledger, type Member, type Operation, type Settlement, type SettlementPeriod,
 } from './domain'
-import { clearQueue, hasCachedSessionSync, queueOperation, readCachedLedgerSync, readLedger, readQueue, removeOperation, replaceOperation, setCachedSessionSync, writeLedger } from './lib/localStore'
+import { clearQueue, queueOperation, readLedger, readQueue, removeOperation, replaceOperation, writeLedger } from './lib/localStore'
 import {
   fetchCloudLedger, fetchMonthlyExpenseTotals, initializeCloudLedger, isCloudConfigured, signIn, signOut, signUp, supabase, syncOperation,
 } from './lib/supabase'
@@ -130,14 +130,7 @@ function applyPendingOperations(ledger: Ledger, operations: Operation[]): Ledger
 }
 
 export default function App() {
-  // NOTE(VI): Lý do: Khởi tạo ledger ngay từ cache đồng bộ (localStorage) để hiển thị giao diện tức thì trong 0 giây, không phải chờ loading
-  // Trước: const [ledger, setLedger] = useState<Ledger | null>(null) -> Bị màn hình "Đang chuẩn bị sổ chi tiêu..."
-  // Sau: Nạp ngay từ readCachedLedgerSync() nếu có, render UI ngay lập tức
-  // Test: Mở app -> Toàn bộ số dư và danh sách hiện ra ngay lập tức
-  const [ledger, setLedger] = useState<Ledger | null>(() => {
-    const cached = readCachedLedgerSync()
-    return cached ? normalizeLedger(cached) : null
-  })
+  const [ledger, setLedger] = useState<Ledger | null>(null)
   const [cachedMonthlyTotals, setCachedMonthlyTotals] = useState<Record<string, number> | null>(null)
   const computedMonthlyTotals = useMemo(() => ledger ? sumExpenseMonths(ledger.expenses) : {}, [ledger?.expenses])
   const [modal, setModal] = useState<'expense' | 'confirm_settlement' | null>(null)
@@ -183,12 +176,8 @@ export default function App() {
   const syncingRef = useRef(false)
   const [syncNotice, setSyncNotice] = useState('')
   const [conflictOperation, setConflictOperation] = useState<Operation | null>(null)
-  // NOTE(VI): Lý do: Tối ưu tải app tức thì (Instant App Launch): Nếu trước đó đã đăng nhập, khởi tạo sẵn sessionReady = true và session = true
-  // Trước: sessionReady mặc định false -> Chờ Supabase getSession() qua mạng 2-5 giây mới hiện UI
-  // Sau: Kiểm tra hasCachedSessionSync() -> Nếu có phiên thì mở thẳng UI, Supabase xác thực ngầm phía sau
-  // Test: Mở lại app -> Không còn hiện màn hình "Đang mở sổ chi tiêu...", app vào thẳng trang chính
-  const [sessionReady, setSessionReady] = useState(() => !isCloudConfigured || hasCachedSessionSync())
-  const [session, setSession] = useState<boolean>(() => !isCloudConfigured || hasCachedSessionSync())
+  const [sessionReady, setSessionReady] = useState(!isCloudConfigured)
+  const [session, setSession] = useState<boolean>(!isCloudConfigured)
   const [userEmail, setUserEmail] = useState('')
 
   useEffect(() => {
@@ -263,17 +252,13 @@ export default function App() {
     void supabase.auth.getSession().then(({ data }) => {
       const authenticated = Boolean(data.session)
       setUserEmail(data.session?.user.email ?? '')
-      setSession(authenticated)
-      setSessionReady(true)
-      setCachedSessionSync(authenticated)
+      setSession(authenticated); setSessionReady(true)
       if (authenticated) void hydrate(true)
     })
     const { data: listener } = supabase.auth.onAuthStateChange((_event, authSession) => {
       const authenticated = Boolean(authSession)
       setUserEmail(authSession?.user.email ?? '')
-      setSession(authenticated)
-      setSessionReady(true)
-      setCachedSessionSync(authenticated)
+      setSession(authenticated); setSessionReady(true)
       if (authenticated) void hydrate(true)
       else { setLedger(null); setNeedsSetup(false); setShowAccount(false) }
     })
