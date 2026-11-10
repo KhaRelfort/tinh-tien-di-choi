@@ -171,8 +171,12 @@ body{background:#f6f5f1}
 .conflict-banner>span{flex-basis:100%}
 .conflict-actions{width:100%}
 .conflict-actions button{font-size:8px}
-.modal-backdrop{align-items:end;padding:0;z-index:60;overscroll-behavior:contain}
-.modal-card{width:min(100%,430px);max-height:min(91dvh,850px);padding:19px 16px calc(17px + env(safe-area-inset-bottom,0px));border-radius:19px 19px 0 0;overscroll-behavior:contain}
+/* NOTE(VI): Lý do: Đưa tất cả popup/modal trên iPhone lên chính giữa màn hình theo yêu cầu người dùng
+   Trước: .modal-backdrop{align-items:end;padding:0} và border-radius: 19px 19px 0 0 làm popup bị kéo tụt xuống mép đáy (bottom sheet)
+   Sau: .modal-backdrop{display:flex;align-items:center;justify-content:center;padding:16px} và border-radius: 18px bo tròn 4 góc, đưa popup lên giữa màn hình
+   Test: Mở popup Thêm khoản chi, Tài khoản, Xác nhận trả tiền trên iPhone -> Tất cả đều hiển thị cân đối ở chính giữa màn hình */
+.modal-backdrop{display:flex;align-items:center;justify-content:center;padding:16px;z-index:60;overscroll-behavior:contain}
+.modal-card{width:min(100%,410px);max-height:min(88dvh,750px);padding:20px 18px;border-radius:18px;overscroll-behavior:contain;margin:auto}
 .modal-heading h2{font-size:17px}
 .modal-heading p{font-size:12.5px}
 .expense-form{gap:12px}
@@ -195,14 +199,14 @@ body{background:#f6f5f1}
 .confirm-settlement-content p{margin:3px 0 0;color:#737b73;font-size:11px}
 .confirm-settlement-content p strong{color:#303a32}
 .confirm-settlement-content>b{font:800 21px Manrope,sans-serif;color:#287b5d;letter-spacing:-.5px}
-.modal-backdrop.centered-backdrop{align-items:center;padding:20px}
-.centered-modal{width:min(100%,390px);max-height:min(90dvh,700px);padding:22px 19px;border-radius:18px}
+.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:16px}
+.centered-modal{width:min(100%,390px);max-height:min(88dvh,720px);padding:22px 19px;border-radius:18px;margin:auto}
 .centered-modal .modal-heading{position:relative;justify-content:center;text-align:center;padding:0 24px}
 .centered-modal .modal-heading>div{width:100%}
 .centered-modal .modal-heading .icon-button{position:absolute;right:-17px;top:-6px}
 .centered-modal .modal-heading .eyebrow{margin-left:auto;margin-right:auto}
 .centered-modal .modal-actions{justify-content:center}
-.wide-modal{width:min(100%,560px)}
+.wide-modal{width:min(100%,420px)}
 .form-label-row{font-size:13px;font-weight:700;color:#596159;margin-bottom:-2px}
 .form-label-row .text-button{font-size:12.5px;font-weight:700}
 /* NOTE(VI): Lý do: Nâng cấp UI popup Thêm khoản chi theo yêu cầu:
@@ -321,10 +325,10 @@ body{background:#f6f5f1}
 .floating-add-expense svg{width:18px;height:18px;flex:0 0 auto}
 .floating-add-expense span{font-size:12px;font-weight:700;letter-spacing:-.2px}
 
-/* NOTE(VI): Lý do: Cho app hiển thị tràn viền full màn hình xuống thanh Home của iPhone (edge-to-edge), cả giao diện chính và modal
-   Trước: body màu xám #e8e9e4, padding-bottom 75px tạo khoảng trống lớn, modal centered bị lơ lửng cách đáy màn hình 20px
-   Sau: html/body background #f6f5f1 liền mạch, modal chuyển thành bottom sheet chạm đáy màn hình với padding safe-area hợp lý, không bị ngắt quãng
-   Test: Mở trên iPhone hoặc Safari/PWA -> Toàn bộ nền app và modal tràn full xuống dưới thanh Home indicator */
+/* NOTE(VI): Lý do: Giữ app hiển thị tràn viền full màn hình xuống thanh Home của iPhone (edge-to-edge), đồng thời đưa tất cả modal/popup hiển thị ở giữa màn hình
+   Trước: modal bị ép thành bottom sheet (align-items: flex-end), bị tụt xuống đáy
+   Sau: html/body background #f6f5f1 tràn viền, modal hiển thị ở giữa màn hình (align-items: center, border-radius 18px cả 4 góc)
+   Test: Mở trên iPhone -> Nền app tràn viền xuống thanh Home, các popup (Thêm khoản chi, Tài khoản...) hiển thị nổi bật ở chính giữa màn hình */
 @media(max-width:560px){
   html,body{padding-bottom:0;margin:0;background:#f6f5f1!important;min-height:100%;min-height:-webkit-fill-available}
   .app-shell{width:100%;max-width:100%;min-height:100vh;min-height:100dvh;min-height:-webkit-fill-available;padding-top:0;box-shadow:none}
@@ -332,7 +336,7 @@ body{background:#f6f5f1}
   .topbar{height:calc(56px + env(safe-area-inset-top,0px));padding:env(safe-area-inset-top,0px) 15px 0}
   .content{padding:18px 15px calc(42px + env(safe-area-inset-bottom,0px))}
   .mobile-nav{display:none!important}
-  .modal-backdrop.centered-backdrop{align-items:flex-end;padding:0}
-  .modal-backdrop.centered-backdrop .centered-modal{width:100%;max-width:100%;border-radius:19px 19px 0 0;padding:22px 19px calc(20px + env(safe-area-inset-bottom,0px))}
+  .modal-backdrop,.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:16px}
+  .modal-card,.centered-modal{margin:auto;border-radius:18px;width:min(100%,400px);max-height:min(88dvh,720px);padding:20px 18px}
 }
 
