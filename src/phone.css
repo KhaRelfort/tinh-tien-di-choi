@@ -177,12 +177,12 @@ body{background:#f6f5f1}
 .conflict-banner>span{flex-basis:100%}
 .conflict-actions{width:100%}
 .conflict-actions button{font-size:8px}
-/* NOTE(VI): Lý do: Giảm bớt padding lề 2 bên trái/phải của popup và khóa cuộn backdrop theo yêu cầu người dùng
-   Trước: Backdrop padding 6px nhưng modal-card dùng calc(100% - 12px) bị trừ kép thành lề 12px mỗi bên, padding trong 12px; backdrop còn overflow-y: auto
-   Sau: Backdrop padding 12px 6px (overflow: hidden, touch-action: none), modal-card width 100% (chỉ cách mép màn hình 6px) và giảm padding trong trái/phải xuống 10px
-   Test: Mở các popup trên điện thoại -> Popup mở rộng sát 2 mép màn hình hơn, nội dung bên trong rộng rãi, vuốt không cuộn nền */
-.modal-backdrop{display:flex;align-items:center;justify-content:center;padding:12px 6px;z-index:60;overflow:hidden;overscroll-behavior:none;touch-action:none}
-.modal-card{width:100%;max-width:420px;max-height:min(88dvh,750px);padding:16px 10px;border-radius:16px;overscroll-behavior:contain;touch-action:pan-y;margin:auto}
+/* NOTE(VI): Lý do: Tăng nhẹ padding lề 2 bên trái/phải của popup lên mức cân đối (không quá sát viền), tính cả safe-area-inset-top để khi bàn phím ảo bật lên đỉnh popup không chạm vào thanh trạng thái iPhone, và khóa cuộn backdrop
+   Trước: Backdrop padding 14px 10px chưa cộng env(safe-area-inset-top)
+   Sau: Backdrop padding trên max(14px, calc(env(safe-area-inset-top, 0px) + 6px)), trái/phải 10px, modal-card padding 18px 14px
+   Test: Mở các popup trên điện thoại có/không có bàn phím -> Khoảng cách viền ngoài và lề trong cân đối, không bị lẹm vào giờ/pin iPhone */
+.modal-backdrop{display:flex;align-items:center;justify-content:center;padding:max(14px,calc(env(safe-area-inset-top,0px) + 6px)) 10px max(14px,env(safe-area-inset-bottom,0px));z-index:60;overflow:hidden;overscroll-behavior:none;touch-action:none}
+.modal-card{width:100%;max-width:420px;max-height:min(88dvh,750px);padding:18px 14px;border-radius:16px;overscroll-behavior:contain;touch-action:pan-y;margin:auto}
 .modal-heading h2{font-size:17px}
 .modal-heading p{font-size:12.5px}
 .expense-form{gap:12px}
@@ -205,11 +205,11 @@ body{background:#f6f5f1}
 .confirm-settlement-content p{margin:3px 0 0;color:#737b73;font-size:11px}
 .confirm-settlement-content p strong{color:#303a32}
 .confirm-settlement-content>b{font:800 21px Manrope,sans-serif;color:#287b5d;letter-spacing:-.5px}
-.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:12px 6px}
-.centered-modal{width:100%;max-width:420px;max-height:min(88dvh,740px);padding:16px 10px;border-radius:16px;margin:auto}
-.centered-modal .modal-heading{position:relative;justify-content:center;text-align:center;padding:0 22px}
+.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:max(14px,calc(env(safe-area-inset-top,0px) + 6px)) 10px max(14px,env(safe-area-inset-bottom,0px))}
+.centered-modal{width:100%;max-width:420px;max-height:min(88dvh,740px);padding:18px 14px;border-radius:16px;margin:auto}
+.centered-modal .modal-heading{position:relative;justify-content:center;text-align:center;padding:0 24px}
 .centered-modal .modal-heading>div{width:100%}
-.centered-modal .modal-heading .icon-button{position:absolute;right:-2px;top:-6px}
+.centered-modal .modal-heading .icon-button{position:absolute;right:-6px;top:-6px}
 .centered-modal .modal-heading .eyebrow{margin-left:auto;margin-right:auto}
 .centered-modal .modal-actions{justify-content:center}
 .wide-modal{width:100%;max-width:420px}
@@ -342,8 +342,8 @@ body{background:#f6f5f1}
   .topbar{height:calc(56px + env(safe-area-inset-top,0px));padding:env(safe-area-inset-top,0px) 15px 0}
   .content{padding:18px 15px calc(42px + env(safe-area-inset-bottom,0px))}
   .mobile-nav{display:none!important}
-  .modal-backdrop,.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:12px 6px;overflow:hidden}
-  .modal-card,.centered-modal,.wide-modal{margin:auto;border-radius:16px;width:100%;max-width:100%;max-height:min(88dvh,740px);padding:16px 10px}
-  .centered-modal .modal-heading .icon-button{right:-2px}
+  .modal-backdrop,.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:max(14px,calc(env(safe-area-inset-top,0px) + 6px)) 10px max(14px,env(safe-area-inset-bottom,0px));overflow:hidden}
+  .modal-card,.centered-modal,.wide-modal{margin:auto;border-radius:16px;width:100%;max-width:100%;max-height:min(88dvh,740px);padding:18px 14px}
+  .centered-modal .modal-heading .icon-button{right:-6px}
 }
 

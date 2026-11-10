@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
   Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
@@ -2085,10 +2085,13 @@ function ExpenseModal({
   </form></Modal>
 }
 
-// NOTE(VI): Lý do: Khóa triệt để cuộn nội dung nền (background scroll lock) trên iPhone/mobile khi mở popup
-// Trước: Chỉ gán overflow: hidden cho body/html (bị iOS Safari bỏ qua) và chỉ chặn touchmove khi e.target === backdrop nên vuốt trên popup vẫn làm cuộn trang bên dưới, cộng thêm dependency [onClose] làm effect chạy lại mỗi lần render
-// Sau: Cố định body bằng position: fixed tại vị trí scrollY hiện tại (kèm bộ đếm activeModalLockCount), kết hợp chặn touchmove/wheel xuyên thấu khi chạm ngoài vùng cuộn hoặc chạm tới biên trên/dưới của popup
-// Test: Mở bất kỳ popup nào trên điện thoại -> vuốt ngoài backdrop hoặc vuốt bên trong popup đều khóa cứng nền bên dưới; đóng popup trả lại đúng vị trí cuộn cũ
+// NOTE(VI): Lý do: Khóa cuộn nền bên dưới và đồng bộ khung hiển thị của tất cả popup theo Visual Viewport trên iPhone/mobile khi bàn phím ảo bật lên
+// Trước: Khi bấm "+ Thêm khoản chi" (hoặc sửa/thêm tên thành viên ở popup Tài khoản), ô input có autoFocus làm bàn phím iOS bật lên và đẩy dịch Layout Viewport lên trên, khiến nửa đầu popup (tiêu đề + ô nhập đang có con trỏ) bị đẩy khuất lên khỏi mép trên màn hình, chỉ nhìn thấy phần cuối popup
+// Sau:
+// 1. Neo trực tiếp .modal-backdrop và giới hạn chiều cao .modal-card theo window.visualViewport (vùng hiển thị thực tế phía trên bàn phím ảo)
+// 2. Khi mở popup hoặc khi con trỏ ở ô đầu popup (như "Tên khoản chi"), cố định card.scrollTop = 0 để luôn hiển thị đúng đầu popup ngay chỗ con trỏ
+// 3. Khi người dùng bấm vào các ô nhập ở phía dưới (như Ghi chú, Tùy chỉnh %, Thêm/Sửa thành viên), tự động cuộn bên trong card vừa đủ để ô đang nhập luôn hiện rõ phía trên bàn phím
+// Test: Mở "+ Thêm khoản chi" trên điện thoại -> bàn phím hiện lên nhưng popup hiển thị ngay phần đầu (tiêu đề Thêm khoản chi + ô Tên khoản chi đang có con trỏ); bấm xuống ô Ghi chú hoặc mở các popup khác (Tài khoản, Xác nhận đã trả...) đều hiển thị chuẩn chỗ con trỏ
 let activeModalLockCount = 0
 let lockedWindowScrollY = 0
 
@@ -2098,7 +2101,7 @@ function Modal({ title, subtitle, onClose, children, centered = false, wide = fa
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const handler = (event: KeyboardEvent) => { if (event.key === 'Escape') onCloseRef.current() }
     window.addEventListener('keydown', handler)
 
@@ -2117,13 +2120,95 @@ function Modal({ title, subtitle, onClose, children, centered = false, wide = fa
     activeModalLockCount += 1
 
     const backdrop = backdropRef.current
+    const card = cardRef.current
+    if (card) {
+      card.scrollTop = 0
+    }
+
+    const timerIds: number[] = []
+    const clearScheduledTimers = () => {
+      while (timerIds.length > 0) {
+        const id = timerIds.pop()
+        if (id !== undefined) window.clearTimeout(id)
+      }
+    }
+
+    const syncModalViewport = (ensureFocusVisible = false) => {
+      const currentBackdrop = backdropRef.current
+      const currentCard = cardRef.current
+      if (!currentBackdrop || !currentCard) return
+
+      if (window.scrollY !== 0 || window.pageYOffset !== 0) {
+        window.scrollTo(0, 0)
+      }
+
+      const vv = window.visualViewport
+      const vvTop = vv ? Math.max(0, vv.offsetTop) : 0
+      const vvHeight = vv ? vv.height : window.innerHeight
+      const isKeyboardOpen = window.innerHeight - vvHeight > 100
+
+      currentBackdrop.style.top = `${vvTop}px`
+      currentBackdrop.style.height = `${vvHeight}px`
+      currentBackdrop.style.bottom = 'auto'
+      currentBackdrop.style.paddingBottom = isKeyboardOpen ? '10px' : ''
+
+      const backdropStyle = window.getComputedStyle(currentBackdrop)
+      const padTop = parseFloat(backdropStyle.paddingTop) || 14
+      const padBottom = parseFloat(backdropStyle.paddingBottom) || 14
+      const availableCardHeight = Math.max(180, Math.min(740, vvHeight - padTop - padBottom))
+      currentCard.style.maxHeight = `${availableCardHeight}px`
+
+      if (ensureFocusVisible) {
+        const activeEl = document.activeElement
+        if (
+          activeEl instanceof HTMLElement &&
+          currentCard.contains(activeEl) &&
+          (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')
+        ) {
+          const cardRect = currentCard.getBoundingClientRect()
+          const elRect = activeEl.getBoundingClientRect()
+          const elOffsetTopInCard = (elRect.top - cardRect.top) + currentCard.scrollTop
+
+          if (elOffsetTopInCard < 150) {
+            currentCard.scrollTop = 0
+          } else if (elRect.top < cardRect.top + 20) {
+            currentCard.scrollTop = Math.max(0, currentCard.scrollTop - (cardRect.top + 28 - elRect.top))
+          } else if (elRect.bottom > cardRect.bottom - 16) {
+            currentCard.scrollTop = currentCard.scrollTop + (elRect.bottom - (cardRect.bottom - 24))
+          }
+        }
+      }
+    }
+
+    const scheduleViewportSync = (ensureFocusVisible: boolean) => {
+      clearScheduledTimers()
+      syncModalViewport(ensureFocusVisible)
+      const delays = [40, 120, 240, 380]
+      for (const delay of delays) {
+        timerIds.push(window.setTimeout(() => syncModalViewport(ensureFocusVisible), delay))
+      }
+    }
+
+    scheduleViewportSync(true)
+
+    const handleViewportChange = () => syncModalViewport(true)
+    const handleFocusIn = () => scheduleViewportSync(true)
+    const handleFocusOut = () => scheduleViewportSync(false)
+
+    const vv = window.visualViewport
+    vv?.addEventListener('resize', handleViewportChange)
+    vv?.addEventListener('scroll', handleViewportChange)
+    window.addEventListener('resize', handleViewportChange)
+    card?.addEventListener('focusin', handleFocusIn)
+    card?.addEventListener('focusout', handleFocusOut)
+
     let lastTouchY = 0
 
     const findScrollableParent = (target: EventTarget | null): HTMLElement | null => {
-      const card = cardRef.current
-      if (!card || !(target instanceof HTMLElement) || !card.contains(target)) return null
+      const currentCard = cardRef.current
+      if (!currentCard || !(target instanceof HTMLElement) || !currentCard.contains(target)) return null
       let el: HTMLElement | null = target
-      while (el && el !== card.parentElement) {
+      while (el && el !== currentCard.parentElement) {
         if (el.scrollHeight > el.clientHeight + 1) {
           const style = window.getComputedStyle(el)
           if (style.overflowY === 'auto' || style.overflowY === 'scroll' || el.tagName === 'TEXTAREA') {
@@ -2178,7 +2263,13 @@ function Modal({ title, subtitle, onClose, children, centered = false, wide = fa
     }
 
     return () => {
+      clearScheduledTimers()
       window.removeEventListener('keydown', handler)
+      vv?.removeEventListener('resize', handleViewportChange)
+      vv?.removeEventListener('scroll', handleViewportChange)
+      window.removeEventListener('resize', handleViewportChange)
+      card?.removeEventListener('focusin', handleFocusIn)
+      card?.removeEventListener('focusout', handleFocusOut)
       if (backdrop) {
         backdrop.removeEventListener('touchstart', handleTouchStart)
         backdrop.removeEventListener('touchmove', handleTouchMove)
