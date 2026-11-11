@@ -21,13 +21,44 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, { error:
   }
 }
 
-// NOTE(VI): Lý do: Gỡ bỏ Service Worker khi chạy local dev để tránh cache làm phiền.
-// Lưu ý: Không được gọi window.location.reload() ở đây vì sẽ gây vòng lặp reload vô tận ở localhost!
-if (import.meta.env.DEV && 'serviceWorker' in navigator) {
-  void navigator.serviceWorker.getRegistrations().then(async (registrations) => {
-    await Promise.all(registrations.map((registration) => registration.unregister()))
+// NOTE(VI): Lý do: Đăng ký Service Worker (Network-First + Offline Cache Fallback) cho cả môi trường DEV (localhost) và PROD, đồng thời tự động warm-up cache các tài nguyên đã tải ở lần mở đầu tiên
+// Trước: Ở môi trường DEV gọi unregister() xóa Service Worker và chỉ đăng ký sw.js ở PROD -> khi bật Offline trong DevTools và bấm F5 sẽ bị lỗi khủng long ERR_INTERNET_DISCONNECTED
+// Sau: Đăng ký /sw.js ở mọi môi trường; khi có mạng luôn lấy code mới nhất từ server, khi mất mạng (offline) tự động phục vụ toàn bộ trang và module từ CacheStorage
+// Test: Mở app -> chuyển Network sang Offline -> bấm F5 tải lại trang -> App vẫn mở lên và hoạt động bình thường
+function registerOfflineServiceWorker() {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return
+
+  const warmUpCurrentPageResources = async () => {
+    if (!navigator.onLine) return
+    try {
+      const registration = await navigator.serviceWorker.ready
+      const activeWorker = registration.active || navigator.serviceWorker.controller
+      if (!activeWorker) return
+      const resourceUrls = performance
+        .getEntriesByType('resource')
+        .map((entry) => entry.name)
+        .filter((url) => url.startsWith(window.location.origin) && !url.includes('supabase.co'))
+      const urls = Array.from(new Set(['/', '/version.js', '/manifest.webmanifest', '/icon.svg', ...resourceUrls]))
+      activeWorker.postMessage({ type: 'CACHE_URLS', urls })
+    } catch {
+      // Ignore warm-up errors when offline
+    }
+  }
+
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker
+      .register('/sw.js', { scope: '/', updateViaCache: 'none' })
+      .then(() => {
+        void warmUpCurrentPageResources()
+        window.setTimeout(() => void warmUpCurrentPageResources(), 1500)
+      })
+      .catch(() => {
+        // Ignore service worker registration errors in unsupported environments
+      })
   })
 }
+
+registerOfflineServiceWorker()
 
 // NOTE(VI): Lý do: Tự động dọn sạch query param ?_reload=... trên URL sau khi vừa reload để thanh địa chỉ sạch đẹp
 // Trước: Link giữ nguyên ?_reload=1793899... trên thanh địa chỉ
@@ -105,10 +136,4 @@ function initVersionWatcher() {
 
 if (import.meta.env.PROD) {
   initVersionWatcher()
-}
-
-if (import.meta.env.PROD && 'serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' })
-  })
 }

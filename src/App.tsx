@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
+  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Download, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
   Plus, ReceiptText, RefreshCw, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
   Wallet, X,
 } from 'lucide-react'
+import { toBlob } from 'html-to-image'
 import {
   equalSplits, getBalances, getMemberDebtBreakdown, getUnpaidTotal, makeDemoLedger, makeId, memberColor, money, normalizeLedger,
   markClosedPeriodsSettled, suggestSettlements, today, type Expense, type Ledger, type Member, type Operation, type Settlement, type SettlementPeriod,
@@ -247,22 +248,91 @@ export default function App() {
     }
   }, [isOnline, refreshMonthlyTotals])
 
+  // NOTE(VI): Lý do: Hỗ trợ mở và sử dụng app hoàn toàn khi mất mạng (Offline) mà không bị văng ra màn hình đăng nhập hoặc treo ở màn hình tải
+  // Trước: Khi mất mạng và bấm F5 / mở lại app, nếu token Supabase cần refresh qua mạng bị lỗi thì getSession()/onAuthStateChange trả về null, khiến app xóa ledger trên RAM và bắt đăng nhập lại (hoặc treo nếu promise lỗi)
+  // Sau: Lưu trạng thái đã đăng nhập (chia-tien-offline-email) và kiểm tra dữ liệu sổ trong IndexedDB (readLedger). Khi mất mạng (!navigator.onLine) hoặc lỗi mạng lúc getSession, tự động khôi phục phiên offline và nạp ngay sổ chi tiêu từ IndexedDB
+  // Test: Đăng nhập mở app -> tắt mạng (Offline) -> bấm F5 tải lại trang -> App vào thẳng sổ chi tiêu từ DB offline, thêm/sửa khoản chi bình thường
   useEffect(() => {
     if (!supabase) { void hydrate(false); return }
-    void supabase.auth.getSession().then(({ data }) => {
-      const authenticated = Boolean(data.session)
-      setUserEmail(data.session?.user.email ?? '')
-      setSession(authenticated); setSessionReady(true)
-      if (authenticated) void hydrate(true)
-    })
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, authSession) => {
+    let cancelled = false
+
+    const tryRestoreOfflineSession = async () => {
+      const saved = await readLedger()
+      let cachedEmail = ''
+      try { cachedEmail = localStorage.getItem('chia-tien-offline-email') ?? '' } catch {}
+      if (cancelled) return false
+      if (saved || cachedEmail) {
+        setUserEmail((prev) => prev || cachedEmail)
+        setSession(true)
+        setSessionReady(true)
+        void hydrate(false)
+        return true
+      }
+      return false
+    }
+
+    if (!navigator.onLine) {
+      void tryRestoreOfflineSession().then((restored) => {
+        if (!restored && !cancelled) setSessionReady(true)
+      })
+    }
+
+    void supabase.auth.getSession()
+      .then(async ({ data }) => {
+        if (cancelled) return
+        const authenticated = Boolean(data.session)
+        if (authenticated) {
+          const email = data.session?.user.email ?? ''
+          try { localStorage.setItem('chia-tien-offline-email', email || 'offline') } catch {}
+          setUserEmail(email)
+          setSession(true)
+          setSessionReady(true)
+          void hydrate(true)
+        } else if (!navigator.onLine) {
+          const restored = await tryRestoreOfflineSession()
+          if (!restored && !cancelled) {
+            setSession(false)
+            setSessionReady(true)
+          }
+        } else {
+          setUserEmail('')
+          setSession(false)
+          setSessionReady(true)
+        }
+      })
+      .catch(async () => {
+        if (cancelled) return
+        const restored = await tryRestoreOfflineSession()
+        if (!restored && !cancelled) {
+          setSessionReady(true)
+        }
+      })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, authSession) => {
+      if (cancelled) return
       const authenticated = Boolean(authSession)
-      setUserEmail(authSession?.user.email ?? '')
-      setSession(authenticated); setSessionReady(true)
-      if (authenticated) void hydrate(true)
-      else { setLedger(null); setNeedsSetup(false); setShowAccount(false) }
+      if (authenticated) {
+        const email = authSession?.user.email ?? ''
+        try { localStorage.setItem('chia-tien-offline-email', email || 'offline') } catch {}
+        setUserEmail(email)
+        setSession(true)
+        setSessionReady(true)
+        void hydrate(true)
+      } else if (!navigator.onLine && event !== 'SIGNED_OUT') {
+        void tryRestoreOfflineSession()
+      } else {
+        setUserEmail('')
+        setSession(false)
+        setSessionReady(true)
+        setLedger(null)
+        setNeedsSetup(false)
+        setShowAccount(false)
+      }
     })
-    return () => listener.subscription.unsubscribe()
+    return () => {
+      cancelled = true
+      listener.subscription.unsubscribe()
+    }
   }, [hydrate])
 
   useEffect(() => {
@@ -624,12 +694,64 @@ export default function App() {
     setSettlementHistoryPage(1)
   }
 
-  // NOTE(VI): Lý do: Kỳ mới bắt đầu ngay hôm nay (endDate = today()) thay vì ngày mai (nextDate) để nếu trong ngày có chi tiêu tiếp theo thì tự động thuộc kỳ mới và có thể chốt tiếp nhiều lần trong cùng ngày
-  // Trước: startDate: nextDate(endDate) -> làm kỳ mới bắt đầu từ ngày mai, nếu chi tiêu chiều/tối hôm nay sẽ bị lệch ngày và không chốt được lần 2 trong ngày
-  // Sau: startDate: endDate (today())
-  // Test: Chốt kỳ trưa nay -> thêm khoản chi chiều nay -> chốt tiếp tối nay thành công 100%
+  // NOTE(VI): Lý do:
+  // 1. Kỳ mới bắt đầu ngay hôm nay (endDate = today()) để nếu trong ngày có chi tiêu tiếp theo thì tự động thuộc kỳ mới và có thể chốt tiếp nhiều lần trong cùng ngày.
+  // 2. Trước khi thực hiện Chốt sổ, tự động đồng bộ và kéo dữ liệu mới nhất từ Cloud về kiểm tra: nếu phát hiện có khoản chi/trả tiền mới của người khác vừa thêm trên mạng mà máy chưa tải về, lập tức cập nhật lại sổ + số dư và dừng việc chốt sổ để người dùng kiểm tra lại con số chính xác trước khi chốt.
+  // Trước: Bấm Chốt sổ là khóa kỳ ngay trên dữ liệu local hiện tại, có thể sót khoản chi mới của thành viên khác vừa nhập trên mạng
+  // Sau: Kiểm tra dữ liệu Cloud mới nhất trước khi chốt; nếu có thay đổi từ máy khác thì cập nhật số dư mới và thông báo cho người dùng kiểm tra lại
+  // Test: Máy A thêm khoản chi mới -> Máy B đang mở sẵn bấm Chốt sổ -> Máy B tự kéo khoản chi của máy A về, cập nhật lại số dư và báo "Đã cập nhật khoản chi mới từ mạng, vui lòng kiểm tra trước khi chốt sổ"
   async function closeCurrentPeriod() {
-    if (!selectedPeriod || selectedPeriod.status !== 'open') return
+    if (!ledger || !selectedPeriod || selectedPeriod.status !== 'open') return
+
+    if (isCloudConfigured && isOnline) {
+      try {
+        await processQueue()
+        const remote = await fetchCloudLedger()
+        const remainingQueue = await readQueue()
+        const merged = remainingQueue.length ? applyPendingOperations(remote, remainingQueue) : remote
+        const latestLedger = normalizeLedger(merged)
+
+        const currentExpenseSig = ledger.expenses
+          .map((e) => `${e.id}:${e.amount}:${e.updatedAt ?? ''}:${e.periodId ?? ''}`)
+          .sort()
+          .join('|')
+        const latestExpenseSig = latestLedger.expenses
+          .map((e) => `${e.id}:${e.amount}:${e.updatedAt ?? ''}:${e.periodId ?? ''}`)
+          .sort()
+          .join('|')
+        const currentSettlementSig = ledger.settlements
+          .map((s) => `${s.id}:${s.amount}:${s.updatedAt ?? ''}:${s.periodId ?? ''}`)
+          .sort()
+          .join('|')
+        const latestSettlementSig = latestLedger.settlements
+          .map((s) => `${s.id}:${s.amount}:${s.updatedAt ?? ''}:${s.periodId ?? ''}`)
+          .sort()
+          .join('|')
+        const latestOpenPeriod = latestLedger.periods.find((p) => p.status === 'open')
+
+        if (
+          currentExpenseSig !== latestExpenseSig ||
+          currentSettlementSig !== latestSettlementSig ||
+          latestOpenPeriod?.id !== selectedPeriod.id
+        ) {
+          setLedger(latestLedger)
+          await writeLedger(latestLedger)
+          await refreshMonthlyTotals()
+          setShowClosePeriodConfirm(false)
+          if (latestOpenPeriod?.id !== selectedPeriod.id) {
+            setSyncNotice('Kỳ chi tiêu này vừa được chốt trên một thiết bị khác. Dữ liệu mới nhất đã được cập nhật.')
+            showToast('Kỳ này đã được chốt từ thiết bị khác')
+          } else {
+            setSyncNotice('Phát hiện khoản chi mới vừa được cập nhật từ mạng. Vui lòng kiểm tra lại số dư và gợi ý chuyển tiền trước khi chốt sổ.')
+            showToast('Đã cập nhật khoản chi mới từ mạng')
+          }
+          return
+        }
+      } catch {
+        // Nếu mạng chập chờn không kiểm tra được, tiếp tục xử lý theo hàng đợi offline
+      }
+    }
+
     const endDate = today()
     const nextPeriod: SettlementPeriod = { id: makeId(), startDate: endDate, endDate: null, status: 'open', settledAt: null }
     const operation: Operation = { opId: makeId(), kind: 'period_close', periodId: selectedPeriod.id, endDate, nextPeriod }
@@ -703,7 +825,15 @@ export default function App() {
               Test: Click vào thanh "Kỳ hiện tại" -> xổ xuống thông báo, nút chốt sổ, gợi ý chuyển tiền; bấm "Chốt sổ kỳ này" -> mở popup xác nhận chốt; bấm "Xem lịch sử trả tiền" -> mở popup lịch sử trả tiền */}
           <section
             className="panel period-accordion-panel"
-            onClick={() => setShowSettlementSection((open) => !open)}
+            onClick={() => {
+              setShowSettlementSection((open) => {
+                const next = !open
+                if (next && isCloudConfigured && isOnline) {
+                  void hydrate(true)
+                }
+                return next
+              })
+            }}
           >
             <div className="period-accordion-header">
               <div className="period-current">
@@ -745,7 +875,12 @@ export default function App() {
                       type="button"
                       className="button primary"
                       style={{ height: '36px', fontSize: '13px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px', width: '100%', borderRadius: '8px' }}
-                      onClick={() => setShowClosePeriodConfirm(true)}
+                      onClick={() => {
+                        if (isCloudConfigured && isOnline) {
+                          void hydrate(true)
+                        }
+                        setShowClosePeriodConfirm(true)
+                      }}
                     >
                       <LockKeyhole size={15} />
                       <span>Chốt sổ kỳ này</span>
@@ -835,7 +970,7 @@ export default function App() {
         onConfirm={closeCurrentPeriod}
       />
     )}
-    {showBillModal && <BillModal groupName={ledger.name} expenses={billData.expenses} members={ledger.members} subtitle={billData.subtitle} onClose={() => setShowBillModal(false)} />}
+    {showBillModal && <BillModal groupName={ledger.name} expenses={billData.expenses} members={ledger.members} subtitle={billData.subtitle} onClose={() => setShowBillModal(false)} showToast={showToast} />}
     {viewingExpense && (
       <ExpenseDetailModal
         expense={viewingExpense}
@@ -867,7 +1002,11 @@ export default function App() {
       onUpdateOwnerAvatar={async (avatarUrl) => {
         await updateMembers(ledger.members, ledger.name, avatarUrl)
       }}
-      onLogout={() => { setShowAccount(false); void signOut() }}
+      onLogout={() => {
+        try { localStorage.removeItem('chia-tien-offline-email') } catch {}
+        setShowAccount(false)
+        void signOut()
+      }}
     />}
     {showSettlementHistoryModal && (
       <SettlementHistoryModal
@@ -928,41 +1067,218 @@ function PaginationControls({ page, pageCount, total, onPageChange }: { page: nu
   return <div className="pagination-controls"><span>{first} – {last} / {total}</span><div><button disabled={page <= 1} aria-label="Trang trước" onClick={() => onPageChange(page - 1)}><ChevronLeft size={16} /></button><span>{page} / {pageCount}</span><button disabled={page >= pageCount} aria-label="Trang sau" onClick={() => onPageChange(page + 1)}><ChevronRight size={16} /></button></div></div>
 }
 
-function BillModal({ groupName, expenses, members, subtitle = 'Tổng hợp các khoản chi.', onClose }: { groupName: string; expenses: Expense[]; members: Member[]; subtitle?: string; onClose: () => void }) {
-  const [copied, setCopied] = useState(false)
+// NOTE(VI): Lý do: Tinh chỉnh lại UI Bill theo yêu cầu người dùng:
+// 1. Đầu bill: Bỏ text "SỔ CHI TIÊU NHÓM" và "SỔ CHI TIÊU NHÓM MÌNH", bắt đầu ngay từ "PHIẾU THANH TOÁN"
+// 2. Chi tiết từng khoản: Bỏ dòng "Chia đều" hoặc "Tùy chỉnh số tiền", nếu chia đều chỉ ghi tên thành viên, nếu chia theo % hoặc tiền thì ghi thẳng [Tên]: % hoặc số tiền
+// 3. Nút bấm: Bỏ nút "Tải ảnh PNG", đưa nút "Sao chép ảnh bill" cùng hàng với "Copy text" và "Đóng", giữ nguyên màu xanh var(--green)
+// 4. Mã QR: Cập nhật hình ảnh mã QR ngân hàng Techcombank gọn gàng, giữ nguyên toàn bộ thông tin tài khoản
+// 5. Cuối bill: Bỏ phần cảm ơn và mã vạch gạch đứng, bill kết thúc gọn gàng ngay sau mã QR
+// Test: Mở Bill -> Thấy bill gọn sạch chuẩn phiếu in nhiệt, các đường gạch đứt sắc nét, 3 nút bấm nằm thẳng 1 hàng; bấm "Sao chép ảnh bill" rồi dán vào Zalo/Messenger hiển thị ảnh hoàn chỉnh
+function BillModal({
+  groupName: _groupName,
+  expenses,
+  members,
+  subtitle = 'Tổng hợp các khoản chi.',
+  onClose,
+  showToast,
+}: {
+  groupName: string
+  expenses: Expense[]
+  members: Member[]
+  subtitle?: string
+  onClose: () => void
+  showToast?: (msg: string) => void
+}) {
+  const [copyingImage, setCopyingImage] = useState(false)
+  const [copiedImage, setCopiedImage] = useState(false)
+  const [copiedText, setCopiedText] = useState(false)
+  const [downloadingChunks, setDownloadingChunks] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState('')
+  const [downloadedChunks, setDownloadedChunks] = useState(false)
+  const receiptRef = useRef<HTMLDivElement>(null)
+  const chunkRefs = useRef<(HTMLDivElement | null)[]>([])
+
   const total = expenses.reduce((sum, expense) => sum + expense.amount, 0)
-  const memberName = (id: string) => members.find((member) => member.id === id)?.name ?? 'Thành viên đã ngừng hoạt động'
+  const memberName = (id: string) => members.find((member) => member.id === id)?.name ?? 'Thành viên'
+
+  // NOTE(VI): Lý do: Cắt danh sách khoản chi thành từng nhóm tối đa 10 hóa đơn/ảnh theo yêu cầu người dùng
+  // Trước: Toàn bộ khoản chi nằm trên 1 ảnh dài duy nhất, nếu nhiều hóa đơn (ví dụ 45) thì ảnh rất dài và zoom khó đọc
+  // Sau: Tách mảng 10 phần tử: Phần 1 (đầu bill + 10 khoản đầu), các phần giữa (10 khoản tiếp theo), phần cuối (các khoản còn lại + tổng kết, phân chia & QR)
+  // Test: Tạo 15 hoặc 45 khoản chi -> kiểm tra mảng chunks chia đúng 2 hoặc 5 phần, mỗi phần tối đa 10 khoản
+  const CHUNK_SIZE = 10
+  const expenseChunks = useMemo(() => {
+    if (!expenses.length) return []
+    const chunks: Expense[][] = []
+    for (let i = 0; i < expenses.length; i += CHUNK_SIZE) {
+      chunks.push(expenses.slice(i, i + CHUNK_SIZE))
+    }
+    return chunks
+  }, [expenses])
+
   const dateGroups = expenses.reduce<{ date: string; expenses: Expense[] }[]>((groups, expense) => {
     const current = groups[groups.length - 1]
     if (current?.date === expense.date) current.expenses.push(expense)
     else groups.push({ date: expense.date, expenses: [expense] })
     return groups
   }, [])
-  const splitPercentages = (expense: Expense) => expense.splits.filter((split) => split.amount > 0).map((split) => `${memberName(split.memberId)} ${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(split.amount / expense.amount * 100)}%`).join(', ')
-  const billText = [
-    `CHI TIẾT CHI TIÊU NHÓM ${groupName.toLocaleUpperCase('vi-VN')}`,
-    ...(subtitle ? [subtitle] : []),
-    `Ngày tính: ${formatDate(today())}`,
-    `Tổng chi: ${money(total)}`,
-    '',
-    ...dateGroups.flatMap((group) => [
-      formatDate(group.date),
-      ...group.expenses.flatMap((expense) => {
-        const index = expenses.indexOf(expense) + 1
-        return [
-          `${String(index).padStart(2, '0')}. ${expense.title} — ${money(expense.amount)}`,
-          `Người trả: ${memberName(expense.payerId)}`,
-          ...((expense.splitMode === 'custom' || expense.splitMode === 'percent') ? [`Tỷ lệ: ${splitPercentages(expense)}`] : []),
-        ]
-      }),
-      '',
-    ]),
-  ].join('\n')
 
-  async function copyAll() {
+  // Bảng phân chia theo từng người trong các khoản chi của bill
+  const memberBreakdown = useMemo(() => {
+    const shareMap = new Map<string, number>()
+    const paidMap = new Map<string, number>()
+    for (const exp of expenses) {
+      paidMap.set(exp.payerId, (paidMap.get(exp.payerId) || 0) + exp.amount)
+      for (const split of exp.splits) {
+        if (split.amount > 0) {
+          shareMap.set(split.memberId, (shareMap.get(split.memberId) || 0) + split.amount)
+        }
+      }
+    }
+    return members
+      .map((m) => ({
+        id: m.id,
+        name: m.name,
+        share: shareMap.get(m.id) || 0,
+        paid: paidMap.get(m.id) || 0,
+      }))
+      .filter((item) => item.share > 0 || item.paid > 0)
+      .sort((a, b) => b.share - a.share)
+  }, [expenses, members])
+
+  const billText = useMemo(() => {
+    return [
+      `----------------------------------------`,
+      `          PHIẾU THANH TOÁN`,
+      `----------------------------------------`,
+      ...(subtitle ? [`Kỳ: ${subtitle}`] : []),
+      `Ngày lập : ${formatDate(today())}`,
+      `Số lượng : ${expenses.length} khoản chi`,
+      `TỔNG CỘNG: ${money(total)}`,
+      `----------------------------------------`,
+      `DANH SÁCH KHOẢN CHI:`,
+      ...dateGroups.flatMap((group) => [
+        `\n[ ${formatDate(group.date)} ]`,
+        ...group.expenses.flatMap((expense, idx) => {
+          const splits = expense.splits.filter((s) => s.amount > 0)
+          let splitDesc = ''
+          if (expense.splitMode === 'equal') {
+            splitDesc = `   Chia cho  : ${splits.map((s) => memberName(s.memberId)).join(', ')}`
+          } else if (expense.splitMode === 'percent') {
+            splitDesc = `   Tỷ lệ chia: ` + splits.map((s) => `${memberName(s.memberId)}: ${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 1 }).format((s.amount / (expense.amount || 1)) * 100)}% (${money(s.amount)})`).join(' · ')
+          } else {
+            splitDesc = `   Tiền chia : ` + splits.map((s) => `${memberName(s.memberId)}: ${money(s.amount)}`).join(' · ')
+          }
+          return [
+            `${String(idx + 1).padStart(2, '0')}. ${expense.title} : ${money(expense.amount)}`,
+            `   Người trả : ${memberName(expense.payerId)}`,
+            splitDesc,
+            ...(expense.note ? [`   Ghi chú   : ${expense.note}`] : []),
+          ]
+        }),
+      ]),
+      `----------------------------------------`,
+      `PHẦN PHẢI CHI TRẢ TỪNG NGƯỜI:`,
+      ...memberBreakdown.map((m) => `• ${m.name}: ${money(m.share)}${m.paid > 0 ? ` (Đã chi trước: ${money(m.paid)})` : ''}`),
+      `----------------------------------------`,
+      `THÔNG TIN CHUYỂN KHOẢN:`,
+      `Ngân hàng : TECHCOMBANK`,
+      `Chủ TK    : LE THI LY THUONG`,
+      `Số TK     : 1903 8123 1750 16`,
+      `----------------------------------------`,
+    ].join('\n')
+  }, [subtitle, expenses, total, dateGroups, memberBreakdown])
+
+  async function prepareReceiptRenderOptions(node: HTMLElement) {
+    const imgs = Array.from(node.querySelectorAll('img'))
+    await Promise.all(
+      imgs.map((img) => {
+        if (img.complete && img.naturalHeight !== 0) return Promise.resolve()
+        return new Promise<void>((resolve) => {
+          img.onload = () => resolve()
+          img.onerror = () => resolve()
+        })
+      })
+    )
+
+    const width = Math.max(
+      node.scrollWidth,
+      node.offsetWidth,
+      Math.ceil(node.getBoundingClientRect().width),
+      360
+    )
+    const height = Math.max(
+      node.scrollHeight,
+      node.offsetHeight,
+      Math.ceil(node.getBoundingClientRect().height)
+    )
+
+    return {
+      pixelRatio: 2.5,
+      backgroundColor: '#ffffff',
+      cacheBust: true,
+      width,
+      height,
+      canvasWidth: width,
+      canvasHeight: height,
+      style: {
+        transform: 'none',
+        maxHeight: 'none',
+        height: `${height}px`,
+        width: `${width}px`,
+        overflow: 'visible',
+        margin: '0',
+      },
+    }
+  }
+
+  async function copyReceiptImage() {
+    const node = receiptRef.current
+    if (!node) return
+    setCopyingImage(true)
+    try {
+      const options = await prepareReceiptRenderOptions(node)
+      let success = false
+      if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+        try {
+          const blobPromise = toBlob(node, options).then((b) => {
+            if (!b) throw new Error('Không tạo được ảnh')
+            return b
+          })
+          await navigator.clipboard.write([
+            new ClipboardItem({ 'image/png': blobPromise }),
+          ])
+          success = true
+        } catch {
+          const blob = await toBlob(node, options)
+          if (blob) {
+            await navigator.clipboard.write([
+              new ClipboardItem({ 'image/png': blob }),
+            ])
+            success = true
+          }
+        }
+      }
+      if (success) {
+        setCopiedImage(true)
+        showToast?.('Đã sao chép ảnh bill! Bạn có thể dán (Paste) vào Zalo, Messenger.')
+        window.setTimeout(() => setCopiedImage(false), 2500)
+      } else {
+        await copyTextFallback()
+        showToast?.('Thiết bị không hỗ trợ dán ảnh trực tiếp, đã sao chép văn bản bill.')
+      }
+    } catch (err) {
+      console.error('Lỗi khi chép ảnh:', err)
+      await copyTextFallback()
+    } finally {
+      setCopyingImage(false)
+    }
+  }
+
+  async function copyTextFallback() {
     try {
       await navigator.clipboard.writeText(billText)
-      setCopied(true)
+      setCopiedText(true)
+      showToast?.('Đã sao chép văn bản bill')
     } catch {
       const textArea = document.createElement('textarea')
       textArea.value = billText
@@ -972,27 +1288,444 @@ function BillModal({ groupName, expenses, members, subtitle = 'Tổng hợp các
       textArea.select()
       const success = document.execCommand('copy')
       textArea.remove()
-      setCopied(success)
+      setCopiedText(success)
+      showToast?.(success ? 'Đã sao chép văn bản bill' : 'Không thể sao chép văn bản')
     }
-    window.setTimeout(() => setCopied(false), 2200)
+    window.setTimeout(() => setCopiedText(false), 2200)
   }
 
-  return <Modal centered wide className="bill-modal" eyebrow="BILL CHI TIÊU NHÓM" title="Chi tiết chi tiêu" subtitle={subtitle} onClose={onClose}>
-    <div className="bill-preview bill-printable">
-      <div className="bill-document-heading">
-        <h2>{groupName}</h2>
-        {subtitle && <p style={{ margin: '2px 0 4px', fontSize: '11px', color: '#666e66', fontWeight: 600 }}>{subtitle}</p>}
-        <p>Ngày tính: {formatDate(today())}</p>
-        <strong>{money(total)}</strong>
+  // NOTE(VI): Lý do: Bổ sung chức năng tải ảnh bill cắt gọn (mỗi ảnh 10 hóa đơn) theo yêu cầu người dùng
+  // Trước: Chỉ có nút Sao chép ảnh nguyên bill dài, nếu bill 45 khoản thì rất dài và khó đọc trên mobile
+  // Sau: Thêm nút màu trắng "Tải ảnh cắt gọn" cùng hàng với các nút hiện tại. Tự động xuất từng ảnh 10 khoản:
+  //      - Bill 1: Tiêu đề + 10 khoản đầu
+  //      - Bill 2..n-1: Tiêu đề + 10 khoản tiếp theo (đúng số thứ tự 11-20...)
+  //      - Bill cuối: Các khoản còn lại + Tổng tiền + Bảng chia từng người + Mã QR chuyển khoản
+  // Test: Bấm "Tải ảnh cắt gọn" -> Tải lần lượt từng file PNG về máy, ảnh sắc nét và đọc rõ ràng trên nhóm chat
+  async function downloadChunkedImages() {
+    if (!expenses.length || !expenseChunks.length) return
+    setDownloadingChunks(true)
+    try {
+      const total = expenseChunks.length
+      for (let i = 0; i < total; i++) {
+        setDownloadProgress(`Đang tải (${i + 1}/${total})...`)
+        const node = chunkRefs.current[i]
+        if (!node) continue
+
+        const options = await prepareReceiptRenderOptions(node)
+        const blob = await toBlob(node, options)
+        if (!blob) throw new Error(`Không tạo được ảnh phần ${i + 1}`)
+
+        const dateStr = today().replace(/-/g, '')
+        const filename = total > 1
+          ? `bill-${dateStr}-phan-${i + 1}-cua-${total}.png`
+          : `bill-${dateStr}.png`
+
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        setTimeout(() => URL.revokeObjectURL(url), 12000)
+
+        if (i < total - 1) {
+          await new Promise((r) => setTimeout(r, 600))
+        }
+      }
+      setDownloadedChunks(true)
+      showToast?.(total > 1 ? `Đã tải về ${total} ảnh bill cắt gọn!` : 'Đã tải về ảnh bill!')
+      window.setTimeout(() => setDownloadedChunks(false), 2500)
+    } catch (err) {
+      console.error('Lỗi khi tải ảnh cắt gọn:', err)
+      showToast?.('Không thể xuất ảnh cắt gọn, vui lòng thử lại.')
+    } finally {
+      setDownloadingChunks(false)
+      setDownloadProgress('')
+    }
+  }
+
+  return (
+    <Modal centered wide className="bill-modal" eyebrow="PHIẾU THANH TOÁN" title="Hóa đơn chi tiêu" subtitle={subtitle} onClose={onClose}>
+      <div className="bill-preview-wrapper">
+        <div ref={receiptRef} className="thermal-receipt-paper bill-printable">
+          {/* Header phong cách bill siêu thị / in nhiệt - Đã bỏ SỔ CHI TIÊU NHÓM và Tên nhóm */}
+          <div className="receipt-header">
+            <div className="receipt-doc-name">PHIẾU THANH TOÁN</div>
+            {subtitle && <div className="receipt-subtitle">{subtitle}</div>}
+            <div className="receipt-meta">Ngày tính: {formatDate(today())}</div>
+          </div>
+
+          <div className="receipt-divider" />
+
+          {/* Danh mục chi tiết các khoản chi */}
+          <div className="receipt-section-title">DANH SÁCH KHOẢN CHI</div>
+          <div className="receipt-table-header">
+            <span>TÊN KHOẢN CHI</span>
+            <span>TIỀN (VNĐ)</span>
+          </div>
+          <div className="receipt-divider light" />
+
+          {dateGroups.length ? (
+            dateGroups.map((group) => (
+              <div key={group.date} className="receipt-date-block">
+                <div className="receipt-date-label">📅 {formatDate(group.date)}</div>
+                {group.expenses.map((expense) => {
+                  const globalIdx = expenses.indexOf(expense) + 1
+                  const splits = expense.splits.filter((s) => s.amount > 0)
+                  return (
+                    <div key={expense.id} className="receipt-item-row">
+                      <div className="receipt-item-main">
+                        <span className="receipt-item-title">
+                          <b>{String(globalIdx).padStart(2, '0')}.</b> {expense.title}
+                        </span>
+                        <strong className="receipt-item-amount">{money(expense.amount)}</strong>
+                      </div>
+                      <div className="receipt-item-sub">
+                        <span>Người trả: <b>{memberName(expense.payerId)}</b></span>
+                      </div>
+                      {/* Thể hiện chi tiết: nếu chia đều chỉ ghi tên, nếu % hoặc tiền ghi thẳng tên: % hoặc tiền */}
+                      <div className="receipt-item-split-box">
+                        {expense.splitMode === 'equal' ? (
+                          <div className="receipt-split-names">
+                            {splits.map((s) => memberName(s.memberId)).join(', ')}
+                          </div>
+                        ) : expense.splitMode === 'percent' ? (
+                          <div className="receipt-split-detail-list">
+                            {splits.map((s) => {
+                              const pct = expense.amount > 0 ? ((s.amount / expense.amount) * 100).toFixed(1).replace('.0', '') : '0'
+                              return (
+                                <span key={s.memberId} className="receipt-split-chip">
+                                  {memberName(s.memberId)}: <b>{pct}%</b> ({money(s.amount)})
+                                </span>
+                              )
+                            })}
+                          </div>
+                        ) : (
+                          <div className="receipt-split-detail-list">
+                            {splits.map((s) => (
+                              <span key={s.memberId} className="receipt-split-chip">
+                                {memberName(s.memberId)}: <b>{money(s.amount)}</b>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {expense.note && (
+                          <div className="receipt-item-note">Ghi chú: {expense.note}</div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ))
+          ) : (
+            <div className="receipt-empty">Không có khoản chi nào trong kỳ này.</div>
+          )}
+
+          <div className="receipt-divider double" />
+
+          {/* Tổng kết tiền */}
+          <div className="receipt-summary-block">
+            <div className="receipt-summary-line">
+              <span>Số lượng khoản chi:</span>
+              <b>{expenses.length} khoản</b>
+            </div>
+            <div className="receipt-total-line">
+              <span>TỔNG TIỀN:</span>
+              <strong className="receipt-grand-total">{money(total)}</strong>
+            </div>
+          </div>
+
+          <div className="receipt-divider" />
+
+          {/* Bảng phân chia theo từng người trong nhóm */}
+          <div className="receipt-section-title">PHẦN PHẢI CHI TRẢ TỪNG NGƯỜI</div>
+          <div className="receipt-breakdown-list">
+            {memberBreakdown.map((m) => (
+              <div key={m.id} className="receipt-breakdown-row">
+                <span className="receipt-member-name">• {m.name}</span>
+                <div className="receipt-member-amounts">
+                  <strong>{money(m.share)}</strong>
+                  {m.paid > 0 && <small>Đã chi: {money(m.paid)}</small>}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="receipt-divider double" />
+
+          {/* Mục chuyển khoản & Mã VietQR của LE THI LY THUONG */}
+          <div className="receipt-payment-section">
+            <div className="receipt-section-title">THÔNG TIN CHUYỂN KHOẢN</div>
+            <div className="receipt-bank-card">
+              <div>Ngân hàng: <b>TECHCOMBANK</b></div>
+              <div>Chủ tài khoản: <b>LE THI LY THUONG</b></div>
+              <div>Số tài khoản: <b className="receipt-account-number">1903 8123 1750 16</b></div>
+            </div>
+
+            <div className="receipt-qr-wrap">
+              <img
+                src="/qr-payment.jpg"
+                alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
+                className="receipt-qr-code"
+                crossOrigin="anonymous"
+              />
+              <div className="receipt-qr-hint">
+                Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      {dateGroups.length ? <div className="bill-expense-list">{dateGroups.map((group) => <section className="bill-date-group" key={group.date}><h3>{formatDate(group.date)}</h3>{group.expenses.map((expense) => {
-        const index = expenses.indexOf(expense) + 1
-        return <article className="bill-expense" key={expense.id}><div className="bill-expense-title"><strong>{String(index).padStart(2, '0')}. {expense.title}</strong><b>{money(expense.amount)}</b></div><p>Người trả: {memberName(expense.payerId)}</p>{(expense.splitMode === 'custom' || expense.splitMode === 'percent') && <p>Tỷ lệ: {splitPercentages(expense)}</p>}</article>
-      })}</section>)}</div> : <div className="empty-state compact"><p>Không có hóa đơn nào khớp bộ lọc.</p></div>}
-      <pre className="bill-copy-text">{billText}</pre>
-    </div>
-    <div className="modal-actions bill-actions"><button type="button" className="button secondary" onClick={onClose}>Đóng</button><button type="button" className="button primary" onClick={() => void copyAll()}><Copy size={15} /> {copied ? 'Đã sao chép' : 'Copy toàn bộ'}</button></div>
-  </Modal>
+
+      {/* Cụm nút bấm thao tác trên cùng 1 hàng: Sao chép ảnh bill / Tải ảnh cắt gọn (trắng) / Copy text / Đóng */}
+      <div className="modal-actions bill-actions-row">
+        <button
+          type="button"
+          className="button primary bill-copy-img-btn"
+          disabled={copyingImage || downloadingChunks || !expenses.length}
+          onClick={() => void copyReceiptImage()}
+          title="Sao chép ảnh hóa đơn độ nét cao vào bộ nhớ tạm để dán vào Zalo/Messenger"
+        >
+          <Camera size={14} />
+          <span>
+            {copyingImage
+              ? 'Đang xuất...'
+              : copiedImage
+              ? 'Đã chép ảnh!'
+              : (
+                <>
+                  <span className="btn-label-desktop">Sao chép ảnh bill</span>
+                  <span className="btn-label-mobile">Chép ảnh</span>
+                </>
+              )}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          className="button secondary bill-download-chunk-btn"
+          disabled={downloadingChunks || copyingImage || !expenses.length}
+          onClick={() => void downloadChunkedImages()}
+          title="Tải ảnh bill cắt gọn (mỗi ảnh 10 khoản chi) để gửi lên nhóm chat dễ đọc, không cần zoom"
+        >
+          <Download size={14} />
+          <span>
+            {downloadingChunks
+              ? (downloadProgress || 'Đang tải...')
+              : downloadedChunks
+              ? 'Đã tải xong!'
+              : (
+                <>
+                  <span className="btn-label-desktop">Tải ảnh cắt gọn</span>
+                  <span className="btn-label-mobile">Tải cắt gọn</span>
+                </>
+              )}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          className="button secondary bill-copy-text-btn"
+          disabled={!expenses.length || downloadingChunks}
+          onClick={() => void copyTextFallback()}
+          title="Sao chép toàn bộ nội dung dạng văn bản"
+        >
+          <ReceiptText size={14} />
+          <span>{copiedText ? 'Đã chép' : 'Copy text'}</span>
+        </button>
+        <button type="button" className="button secondary bill-close-btn" onClick={onClose}>
+          Đóng
+        </button>
+      </div>
+
+      {/* Vùng render ngầm các ảnh bill cắt gọn từng 10 hóa đơn để chụp xuất ảnh */}
+      <div
+        className="bill-chunk-export-container"
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          left: '-9999px',
+          top: 0,
+          width: '375px',
+          pointerEvents: 'none',
+          zIndex: -999,
+        }}
+      >
+        {expenseChunks.map((chunkExpenses, cIdx) => {
+          const isFirst = cIdx === 0
+          const isLast = cIdx === expenseChunks.length - 1
+          const startIdx = cIdx * 10
+          const endIdx = startIdx + chunkExpenses.length
+
+          const chunkDateGroups = chunkExpenses.reduce<{ date: string; expenses: Expense[] }[]>((groups, expense) => {
+            const current = groups[groups.length - 1]
+            if (current?.date === expense.date) current.expenses.push(expense)
+            else groups.push({ date: expense.date, expenses: [expense] })
+            return groups
+          }, [])
+
+          return (
+            <div
+              key={`chunk-${cIdx}`}
+              ref={(el) => { chunkRefs.current[cIdx] = el }}
+              className="thermal-receipt-paper bill-printable bill-chunk-paper"
+            >
+              {/* Header */}
+              <div className="receipt-header">
+                <div className="receipt-doc-name">PHIẾU THANH TOÁN</div>
+                {expenseChunks.length > 1 && (
+                  <div className="receipt-chunk-badge">
+                    PHẦN {cIdx + 1}/{expenseChunks.length} (Khoản {String(startIdx + 1).padStart(2, '0')} - {String(endIdx).padStart(2, '0')})
+                  </div>
+                )}
+                {subtitle && (
+                  <div className="receipt-subtitle">{subtitle}</div>
+                )}
+                {isFirst && (
+                  <div className="receipt-meta">Ngày tính: {formatDate(today())}</div>
+                )}
+              </div>
+
+              <div className="receipt-divider" />
+
+              {/* Danh sách khoản chi */}
+              <div className="receipt-section-title">
+                DANH SÁCH KHOẢN CHI {expenseChunks.length > 1 ? `(${startIdx + 1} - ${endIdx})` : ''}
+              </div>
+              <div className="receipt-table-header">
+                <span>TÊN KHOẢN CHI</span>
+                <span>TIỀN (VNĐ)</span>
+              </div>
+              <div className="receipt-divider light" />
+
+              {chunkDateGroups.map((group) => (
+                <div key={group.date} className="receipt-date-block">
+                  <div className="receipt-date-label">📅 {formatDate(group.date)}</div>
+                  {group.expenses.map((expense) => {
+                    const globalIdx = expenses.indexOf(expense) + 1
+                    const splits = expense.splits.filter((s) => s.amount > 0)
+                    return (
+                      <div key={expense.id} className="receipt-item-row">
+                        <div className="receipt-item-main">
+                          <span className="receipt-item-title">
+                            <b>{String(globalIdx).padStart(2, '0')}.</b> {expense.title}
+                          </span>
+                          <strong className="receipt-item-amount">{money(expense.amount)}</strong>
+                        </div>
+                        <div className="receipt-item-sub">
+                          <span>Người trả: <b>{memberName(expense.payerId)}</b></span>
+                        </div>
+                        <div className="receipt-item-split-box">
+                          {expense.splitMode === 'equal' ? (
+                            <div className="receipt-split-names">
+                              {splits.map((s) => memberName(s.memberId)).join(', ')}
+                            </div>
+                          ) : expense.splitMode === 'percent' ? (
+                            <div className="receipt-split-detail-list">
+                              {splits.map((s) => {
+                                const pct = expense.amount > 0 ? ((s.amount / expense.amount) * 100).toFixed(1).replace('.0', '') : '0'
+                                return (
+                                  <span key={s.memberId} className="receipt-split-chip">
+                                    {memberName(s.memberId)}: <b>{pct}%</b> ({money(s.amount)})
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <div className="receipt-split-detail-list">
+                              {splits.map((s) => (
+                                <span key={s.memberId} className="receipt-split-chip">
+                                  {memberName(s.memberId)}: <b>{money(s.amount)}</b>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {expense.note && (
+                            <div className="receipt-item-note">Ghi chú: {expense.note}</div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+
+              {/* Phần tiếp theo nếu chưa phải trang cuối */}
+              {!isLast && (
+                <>
+                  <div className="receipt-divider dashed" />
+                  <div className="receipt-chunk-footer-notice">
+                    --- CÒN TIẾP (PHẦN {cIdx + 2}/{expenseChunks.length}) ---&gt;
+                  </div>
+                </>
+              )}
+
+              {/* Trang cuối: Tổng kết tiền + Phần chia từng người + Chuyển khoản QR */}
+              {isLast && (
+                <>
+                  <div className="receipt-divider double" />
+
+                  {/* Tổng kết tiền */}
+                  <div className="receipt-summary-block">
+                    <div className="receipt-summary-line">
+                      <span>Số lượng khoản chi:</span>
+                      <b>{expenses.length} khoản</b>
+                    </div>
+                    <div className="receipt-total-line">
+                      <span>TỔNG TIỀN:</span>
+                      <strong className="receipt-grand-total">{money(total)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="receipt-divider" />
+
+                  {/* Bảng phân chia theo từng người trong nhóm */}
+                  <div className="receipt-section-title">PHẦN PHẢI CHI TRẢ TỪNG NGƯỜI</div>
+                  <div className="receipt-breakdown-list">
+                    {memberBreakdown.map((m) => (
+                      <div key={m.id} className="receipt-breakdown-row">
+                        <span className="receipt-member-name">• {m.name}</span>
+                        <div className="receipt-member-amounts">
+                          <strong>{money(m.share)}</strong>
+                          {m.paid > 0 && <small>Đã chi: {money(m.paid)}</small>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="receipt-divider double" />
+
+                  {/* Mục chuyển khoản & Mã VietQR của LE THI LY THUONG */}
+                  <div className="receipt-payment-section">
+                    <div className="receipt-section-title">THÔNG TIN CHUYỂN KHOẢN</div>
+                    <div className="receipt-bank-card">
+                      <div>Ngân hàng: <b>TECHCOMBANK</b></div>
+                      <div>Chủ tài khoản: <b>LE THI LY THUONG</b></div>
+                      <div>Số tài khoản: <b className="receipt-account-number">1903 8123 1750 16</b></div>
+                    </div>
+
+                    <div className="receipt-qr-wrap">
+                      <img
+                        src="/qr-payment.jpg"
+                        alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
+                        className="receipt-qr-code"
+                        crossOrigin="anonymous"
+                      />
+                      <div className="receipt-qr-hint">
+                        Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </Modal>
+  )
 }
 
 function ExpenseList({

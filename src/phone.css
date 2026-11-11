@@ -241,23 +241,69 @@ body{background:#f6f5f1}
 .custom-splits .custom-amount-input{width:58%;text-align:right}
 .split-summary{font-size:12.5px}
 .split-summary strong{font-size:13.5px}
-.bill-modal .modal-card{width:min(100%,680px)}
-.bill-preview{max-height:58vh;overflow:auto;border:1px solid #eceee8;border-radius:10px;padding:15px;background:#fff}
-.bill-document-heading{display:grid;gap:5px;padding-bottom:12px;border-bottom:1px solid #eceee8}
-.bill-document-heading h2{font-size:16px;margin:0}
-.bill-document-heading p,.bill-document-heading span{font-size:9px;color:#858d85;margin:0}
-.bill-document-heading>strong{font-size:17px;color:#287b5d}
-.bill-date-group{break-inside:avoid}
-.bill-date-group h3{margin:14px 0 0;padding:0 0 8px;border-bottom:1px solid #e9ece6;color:#287b5d;font-size:13px;line-height:1.35}
-.bill-expense{padding:12px 0;border-bottom:1px solid #eff0ec;break-inside:avoid}
-.bill-expense:last-child{border-bottom:0}
-.bill-expense-title{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-.bill-expense-title strong,.bill-expense-title b{font-size:10px}
-.bill-expense-title b{white-space:nowrap}
-.bill-expense p{font-size:9px;line-height:1.5;color:#707970;margin:5px 0 0}
-.bill-expense small{display:block;font-size:8px;color:#8b938b;margin-top:5px}
-.bill-copy-text{display:none}
-.bill-actions{margin-top:12px}
+/* NOTE(VI): Lý do: Tinh chỉnh giao diện phiếu in nhiệt theo yêu cầu người dùng:
+   - Đầu bill bắt đầu từ PHIẾU THANH TOÁN (bỏ SỔ CHI TIÊU NHÓM & tên nhóm)
+   - Tất cả đường phân cách đổi thành nét đứt (dashed) như bill in thật
+   - Chi tiết khoản chi: chia đều chỉ hiển thị danh sách tên người chia; chia theo % hoặc tiền hiển thị gọn [Tên]: % hoặc tiền
+   - Mã QR gọn gàng, bỏ phần cảm ơn và mã vạch ở đáy bill
+   - 3 nút thao tác (Sao chép ảnh bill, Copy text, Đóng) xếp cùng 1 hàng ngang, nút sao chép giữ màu xanh var(--green) nổi bật
+   Test: Bấm In bill -> Thấy bill gọn gàng chuẩn hóa đơn in nhiệt, 3 nút bấm nằm thẳng hàng; bấm Sao chép ảnh bill rồi dán vào Zalo/Messenger hiển thị ảnh chuẩn đẹp */
+.bill-modal .modal-card{width:min(100%,480px);padding:14px 12px}
+.bill-preview-wrapper{display:flex;justify-content:center;align-items:flex-start;background:#eef1ec;border-radius:10px;padding:12px 6px;max-height:60vh;overflow-y:auto;overflow-x:hidden}
+.thermal-receipt-paper{width:100%;max-width:375px;height:auto!important;max-height:none!important;min-height:min-content;overflow:visible!important;flex-shrink:0;background:#ffffff;color:#181c19;font-family:'Space Mono','SF Mono',Consolas,'Courier New',Courier,monospace;font-size:11.5px;line-height:1.45;padding:20px 16px 22px;box-shadow:0 3px 16px rgba(0,0,0,0.09);position:relative;border-top:2px dashed #b2b9b2;border-bottom:2px dashed #b2b9b2}
+.receipt-header{text-align:center;padding-bottom:2px}
+.receipt-doc-name{font-size:14px;font-weight:700;letter-spacing:1px;margin:0 0 4px;color:#111}
+.receipt-subtitle{font-size:11px;color:#4c554e;margin:2px 0}
+.receipt-meta{font-size:10px;color:#677069;margin-top:2px}
+.receipt-divider{border:none;border-top:1.5px dashed #384039;margin:9px 0}
+.receipt-divider.double{border:none;border-top:1.5px dashed #384039;border-bottom:1.5px dashed #384039;height:3px;margin:9px 0}
+.receipt-divider.light{border:none;border-top:1px dashed #c0c6bf;margin:6px 0}
+.receipt-section-title{font-size:11px;font-weight:700;letter-spacing:.5px;text-align:center;margin:5px 0 5px;color:#222}
+.receipt-table-header{display:flex;justify-content:space-between;font-weight:700;font-size:10px;color:#48524a;letter-spacing:.3px}
+.receipt-date-block{margin-bottom:8px}
+.receipt-date-label{font-size:10.5px;font-weight:700;color:#257b5c;background:#f2f7f3;padding:2px 6px;border-radius:4px;display:inline-block;margin:5px 0 3px}
+.receipt-item-row{padding:5px 0;border-bottom:1px dashed #eaeee8}
+.receipt-item-row:last-child{border-bottom:none}
+.receipt-item-main{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.receipt-item-title{font-size:11.5px;font-weight:700;color:#181c19;word-break:break-word}
+.receipt-item-amount{font-size:12px;font-weight:700;white-space:nowrap;color:#181c19}
+.receipt-item-sub{font-size:10px;color:#555f56;margin-top:2px;padding-left:14px}
+.receipt-item-split-box{font-size:9.5px;color:#59645a;margin-top:2px;padding-left:14px;line-height:1.4}
+.receipt-split-names{font-size:9.5px;color:#555f56;margin-top:1px;line-height:1.35}
+.receipt-split-detail-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.receipt-split-chip{background:#f6f8f4;padding:1px 5px;border-radius:3px;border:1px dashed #d5dbd3;font-size:9px}
+.receipt-item-note{font-style:italic;color:#7a847b;margin-top:2px}
+.receipt-empty{text-align:center;font-size:11px;color:#7a847b;padding:14px 0}
+.receipt-summary-block{display:grid;gap:4px;padding:2px 0}
+.receipt-summary-line{display:flex;justify-content:space-between;font-size:11px;color:#454f46}
+.receipt-total-line{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;font-weight:700;color:#181c19;padding-top:2px}
+.receipt-grand-total{font-size:16px;font-weight:700;color:#257b5c;letter-spacing:-.3px}
+.receipt-breakdown-list{display:grid;gap:5px;padding:2px 0}
+.receipt-breakdown-row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#242a25}
+.receipt-member-name{font-weight:600}
+.receipt-member-amounts{text-align:right}
+.receipt-member-amounts strong{font-weight:700}
+.receipt-member-amounts small{display:block;font-size:9px;color:#788279}
+.receipt-payment-section{text-align:center;padding:2px 0 0}
+.receipt-bank-card{display:inline-block;text-align:left;font-size:10.5px;background:#f5f8f5;border:1px dashed #ccd4cb;border-radius:6px;padding:6px 11px;margin:2px auto 6px;line-height:1.55}
+.receipt-account-number{color:#257b5c;letter-spacing:.4px}
+.receipt-qr-wrap{text-align:center;margin:4px 0 0}
+.receipt-qr-code{width:165px;height:165px;max-width:80%;object-fit:contain;margin:0 auto;display:block;border-radius:8px;background:#fff;padding:4px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border:1px dashed #d5dbd4}
+.receipt-qr-hint{font-size:9.5px;color:#5c665d;margin-top:5px;font-style:italic}
+.receipt-chunk-badge{font-size:10px;font-weight:700;color:#257b5c;background:#edf6f1;border:1px dashed #b7decb;border-radius:4px;display:inline-block;padding:2px 7px;margin:3px 0 4px;letter-spacing:.3px}
+.receipt-chunk-footer-notice{text-align:center;font-size:9.5px;font-weight:700;color:#647066;letter-spacing:.4px;padding:7px 0 2px}
+.bill-actions-row{display:flex;align-items:center;gap:5px;margin-top:10px;width:100%}
+.bill-actions-row .button{height:38px;font-size:11.5px;padding:0 8px;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.bill-copy-img-btn{flex:1.35;font-weight:700;border-radius:8px;background:var(--green)!important;color:#fff!important;box-shadow:0 2px 8px rgba(37,123,92,.25)}
+.bill-download-chunk-btn{flex:1.25;font-weight:600;border-radius:8px;background:#ffffff!important;color:#354038!important;border:1px solid #d4dad3!important}
+.bill-download-chunk-btn:hover{background:#f6f8f5!important}
+.bill-copy-text-btn{flex:1;border-radius:8px;background:#ffffff!important;color:#48524a!important;border:1px solid #d4dad3!important}
+.bill-close-btn{flex:0 0 auto;border-radius:8px;padding:0 10px;background:#ffffff!important;color:#556057!important;border:1px solid #d4dad3!important}
+.btn-label-mobile{display:none}
+@media (max-width: 420px){
+  .btn-label-desktop{display:none}
+  .btn-label-mobile{display:inline}
+}
 .summary-card .monthly-chart{position:absolute;right:11px;bottom:4px;width:56%;height:54px}
 .summary-card .monthly-chart .mini-bars{position:static;right:auto;bottom:auto;width:100%;height:43px;display:flex;align-items:stretch;gap:3px}
 .summary-card button.month-bar{position:relative;flex:1;min-width:0;height:100%;display:flex;align-items:flex-end;justify-content:center;overflow:visible;border:0;padding:0;background:transparent}
