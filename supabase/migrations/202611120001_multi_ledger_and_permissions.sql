@@ -1,0 +1,379 @@
+-- ====================================================================
+-- MIGRATION: 202611120001_multi_ledger_and_permissions.sql
+-- HỖ TRỢ CHIA SẺ SỔ CHI TIÊU QUA EMAIL & PHÂN QUYỀN CHỦ SỔ
+-- ====================================================================
+
+-- 1. Xóa các phiên bản hàm cũ để tránh trùng lặp overload chữ ký
+drop function if exists public.get_ledger_snapshot();
+drop function if exists public.get_ledger_snapshot(uuid);
+drop function if exists public.update_ledger_members(text, text[]);
+drop function if exists public.update_ledger_members(text, jsonb);
+drop function if exists public.update_ledger_members(text, jsonb, text);
+drop function if exists public.update_ledger_members(text, jsonb, text, uuid);
+drop function if exists public.apply_sync_operation(uuid, jsonb);
+drop function if exists public.get_user_ledgers();
+
+-- 2. Bổ sung các cột cần thiết cho bảng
+alter table public.group_members add column if not exists email text;
+create index if not exists idx_group_members_email on public.group_members (lower(trim(email)));
+
+alter table public.group_members add column if not exists avatar_url text;
+alter table public.expense_groups add column if not exists owner_avatar_url text;
+
+alter table public.expenses add column if not exists created_at timestamptz default now();
+
+-- 3. Hàm lấy danh sách tất cả các sổ user có quyền truy cập (sổ của tôi + sổ được mời)
+create or replace function public.get_user_ledgers()
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_user_email text;
+  v_result jsonb;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  v_user_email := lower(trim(coalesce(auth.jwt()->>'email', '')));
+
+  select jsonb_agg(jsonb_build_object(
+    'id', g.id,
+    'name', g.name,
+    'isOwner', (g.owner_user_id = auth.uid()),
+    'ownerEmail', (select email from auth.users where id = g.owner_user_id),
+    'linkedMemberName', (
+      select m.name from public.group_members m
+      where m.group_id = g.id and lower(trim(coalesce(m.email, ''))) = v_user_email
+      limit 1
+    ),
+    'linkedMemberId', (
+      select m.id from public.group_members m
+      where m.group_id = g.id and lower(trim(coalesce(m.email, ''))) = v_user_email
+      limit 1
+    ),
+    'createdAt', g.created_at
+  ) order by (g.owner_user_id = auth.uid()) desc, g.created_at desc)
+  into v_result
+  from public.expense_groups g
+  where g.owner_user_id = auth.uid()
+     or (v_user_email <> '' and exists (
+          select 1 from public.group_members m
+          where m.group_id = g.id and lower(trim(coalesce(m.email, ''))) = v_user_email
+        ));
+
+  return coalesce(v_result, '[]'::jsonb);
+end;
+$$;
+
+-- 4. Hàm tải chi tiết sổ chi tiêu (hỗ trợ p_group_id và trả về quyền isOwner)
+create or replace function public.get_ledger_snapshot(p_group_id uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_group public.expense_groups%rowtype;
+  v_user_email text;
+  v_current_member_id uuid;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  v_user_email := lower(trim(coalesce(auth.jwt()->>'email', '')));
+
+  if p_group_id is not null then
+    select * into v_group from public.expense_groups g
+    where g.id = p_group_id and (
+      g.owner_user_id = auth.uid()
+      or (v_user_email <> '' and exists (
+        select 1 from public.group_members m
+        where m.group_id = g.id and lower(trim(coalesce(m.email, ''))) = v_user_email
+      ))
+    );
+  else
+    select * into v_group from public.expense_groups g
+    where g.owner_user_id = auth.uid()
+    order by g.created_at desc limit 1;
+
+    if v_group.id is null and v_user_email <> '' then
+      select g.* into v_group from public.expense_groups g
+      join public.group_members m on m.group_id = g.id
+      where lower(trim(coalesce(m.email, ''))) = v_user_email
+      order by g.created_at desc limit 1;
+    end if;
+  end if;
+
+  if v_group.id is null then
+    return jsonb_build_object('id', null);
+  end if;
+
+  if v_user_email <> '' then
+    select id into v_current_member_id
+    from public.group_members
+    where group_id = v_group.id and lower(trim(coalesce(email, ''))) = v_user_email
+    limit 1;
+  end if;
+
+  return jsonb_build_object(
+    'id', v_group.id,
+    'name', v_group.name,
+    'ownerAvatarUrl', v_group.owner_avatar_url,
+    'isOwner', (v_group.owner_user_id = auth.uid()),
+    'currentUserEmail', v_user_email,
+    'currentMemberId', v_current_member_id,
+    'members', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', m.id,
+        'name', m.name,
+        'sortOrder', m.sort_order,
+        'active', m.is_active,
+        'avatarUrl', m.avatar_url,
+        'email', m.email
+      ) order by m.sort_order)
+      from public.group_members m
+      where m.group_id = v_group.id
+    ), '[]'::jsonb),
+    'expenses', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', e.id,
+        'title', e.title,
+        'amount', e.amount_vnd,
+        'payerId', e.payer_member_id,
+        'date', e.spent_on,
+        'note', coalesce(e.note, ''),
+        'category', coalesce(e.category, 'Khác'),
+        'splitMode', e.split_mode,
+        'createdAt', coalesce(e.created_at, e.updated_at),
+        'updatedAt', e.updated_at,
+        'periodId', e.period_id,
+        'splits', coalesce((
+          select jsonb_agg(jsonb_build_object(
+            'memberId', s.member_id,
+            'amount', s.amount_vnd
+          ) order by s.member_id)
+          from public.expense_splits s
+          where s.expense_id = e.id
+        ), '[]'::jsonb)
+      ) order by e.spent_on desc, e.updated_at desc)
+      from public.expenses e
+      where e.group_id = v_group.id
+    ), '[]'::jsonb),
+    'settlements', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', s.id,
+        'fromMemberId', s.from_member_id,
+        'toMemberId', s.to_member_id,
+        'amount', s.amount_vnd,
+        'date', s.paid_on,
+        'note', coalesce(s.note, ''),
+        'periodId', s.period_id,
+        'updatedAt', s.updated_at
+      ) order by s.paid_on desc)
+      from public.settlements s
+      where s.group_id = v_group.id
+    ), '[]'::jsonb),
+    'periods', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', p.id,
+        'startDate', p.start_date,
+        'endDate', p.end_date,
+        'status', p.status,
+        'settledAt', p.settled_at
+      ) order by p.start_date desc)
+      from public.settlement_periods p
+      where p.group_id = v_group.id
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
+-- 5. Hàm update_ledger_members (chỉ chủ sổ mới được gọi)
+create or replace function public.update_ledger_members(
+  p_name text,
+  p_members jsonb,
+  p_owner_avatar_url text default null,
+  p_group_id uuid default null
+)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  v_group_id uuid;
+  v_member jsonb;
+  v_member_id uuid;
+  v_sort_order integer;
+  v_name text;
+  v_avatar_url text;
+  v_email text;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+
+  if p_group_id is not null then
+    v_group_id := p_group_id;
+  else
+    select id into v_group_id from public.expense_groups where owner_user_id = auth.uid() limit 1;
+  end if;
+
+  if v_group_id is null then raise exception 'Ledger not found'; end if;
+
+  if not exists (select 1 from public.expense_groups where id = v_group_id and owner_user_id = auth.uid()) then
+    raise exception 'Chỉ chủ sổ mới có quyền cập nhật thành viên và liên kết email';
+  end if;
+
+  if jsonb_typeof(p_members) <> 'array' or jsonb_array_length(p_members) < 4 then
+    raise exception 'Sổ phải có ít nhất 4 thành viên';
+  end if;
+
+  update public.expense_groups
+  set name = trim(p_name),
+      owner_avatar_url = coalesce(p_owner_avatar_url, owner_avatar_url),
+      updated_at = now()
+  where id = v_group_id;
+
+  for v_member in select value from jsonb_array_elements(p_members) loop
+    v_member_id := (v_member->>'id')::uuid;
+    v_sort_order := (v_member->>'sortOrder')::integer;
+    v_name := trim(v_member->>'name');
+    v_avatar_url := v_member->>'avatarUrl';
+    v_email := lower(trim(nullif(v_member->>'email', '')));
+
+    insert into public.group_members(id, group_id, name, sort_order, is_active, avatar_url, email)
+    values (v_member_id, v_group_id, v_name, v_sort_order, coalesce((v_member->>'active')::boolean, true), v_avatar_url, v_email)
+    on conflict (group_id, id) do update set
+      name = excluded.name,
+      sort_order = excluded.sort_order,
+      is_active = excluded.is_active,
+      avatar_url = excluded.avatar_url,
+      email = excluded.email;
+  end loop;
+end;
+$$;
+
+-- 6. Cập nhật hàm apply_sync_operation: phân quyền nghiêm ngặt
+create or replace function public.apply_sync_operation(p_op_id uuid, p_operation jsonb)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  v_group_id uuid;
+  v_kind text;
+  v_record jsonb;
+  v_expense_id uuid;
+  v_user_email text;
+  v_is_owner boolean;
+  v_amount bigint;
+  v_period_id uuid;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  v_user_email := lower(trim(coalesce(auth.jwt()->>'email', '')));
+  v_kind := p_operation->>'kind';
+
+  v_group_id := nullif(p_operation->>'groupId', '')::uuid;
+  if v_group_id is null then
+    select id into v_group_id from public.expense_groups where owner_user_id = auth.uid() limit 1;
+  end if;
+
+  if v_group_id is null then raise exception 'Ledger not found'; end if;
+
+  select (owner_user_id = auth.uid()) into v_is_owner
+  from public.expense_groups where id = v_group_id;
+
+  if v_is_owner is not true then
+    if not exists (
+      select 1 from public.group_members
+      where group_id = v_group_id and lower(trim(coalesce(email, ''))) = v_user_email
+    ) then
+      raise exception 'Bạn không có quyền truy cập sổ này';
+    end if;
+  end if;
+
+  -- BẢO VỆ CHỐT SỔ: Chặn nếu không phải chủ sổ
+  if v_kind = 'period_close' and v_is_owner is not true then
+    raise exception 'Chỉ chủ sổ mới có quyền chốt sổ kỳ này';
+  end if;
+
+  -- BẢO VỆ THÀNH VIÊN: Chặn nếu không phải chủ sổ
+  if v_kind = 'members_update' and v_is_owner is not true then
+    raise exception 'Chỉ chủ sổ mới có quyền cập nhật thành viên và liên kết email';
+  end if;
+
+  if v_kind = 'expense_upsert' then
+    v_record := p_operation->'record';
+    v_expense_id := (v_record->>'id')::uuid;
+
+    insert into public.expenses(id, group_id, title, amount_vnd, payer_member_id, spent_on, category, note, split_mode, period_id, updated_at)
+    values (
+      v_expense_id, v_group_id, trim(v_record->>'title'), (v_record->>'amount')::bigint,
+      (v_record->>'payerId')::uuid, (v_record->>'date')::date,
+      coalesce(v_record->>'category', 'Khác'), coalesce(v_record->>'note', ''),
+      coalesce(v_record->>'splitMode', 'equal'), nullif(v_record->>'periodId', '')::uuid,
+      coalesce(nullif(v_record->>'updatedAt', '')::timestamptz, now())
+    )
+    on conflict (id) do update set
+      title = excluded.title, amount_vnd = excluded.amount_vnd,
+      payer_member_id = excluded.payer_member_id, spent_on = excluded.spent_on,
+      category = excluded.category, note = excluded.note,
+      split_mode = excluded.split_mode, period_id = excluded.period_id,
+      updated_at = excluded.updated_at;
+
+    delete from public.expense_splits where expense_id = v_expense_id;
+    if jsonb_typeof(v_record->'splits') = 'array' then
+      insert into public.expense_splits(expense_id, member_id, amount_vnd)
+      select v_expense_id, (item->>'memberId')::uuid, (item->>'amount')::bigint
+      from jsonb_array_elements(v_record->'splits') as item;
+    end if;
+
+  elsif v_kind = 'expense_delete' then
+    delete from public.expenses where id = (p_operation->>'recordId')::uuid and group_id = v_group_id;
+
+  elsif v_kind = 'settlement_upsert' then
+    v_record := p_operation->'record';
+    v_expense_id := (v_record->>'id')::uuid;
+    v_amount := (v_record->>'amount')::bigint;
+    v_period_id := nullif(v_record->>'periodId', '')::uuid;
+    if v_period_id is null then
+      select id into v_period_id from public.settlement_periods where group_id = v_group_id and status = 'open' limit 1;
+    end if;
+
+    insert into public.settlements(id, group_id, from_member_id, to_member_id, amount_vnd, paid_on, note, period_id, updated_at)
+    values (
+      v_expense_id, v_group_id, (v_record->>'fromMemberId')::uuid,
+      (v_record->>'toMemberId')::uuid, v_amount, (v_record->>'date')::date,
+      coalesce(v_record->>'note', ''), v_period_id,
+      coalesce(nullif(v_record->>'updatedAt', '')::timestamptz, now())
+    )
+    on conflict (id) do update set
+      from_member_id = excluded.from_member_id,
+      to_member_id = excluded.to_member_id,
+      amount_vnd = excluded.amount_vnd,
+      paid_on = excluded.paid_on,
+      note = excluded.note,
+      period_id = excluded.period_id,
+      updated_at = excluded.updated_at;
+
+  elsif v_kind = 'settlement_delete' then
+    delete from public.settlements where id = (p_operation->>'recordId')::uuid and group_id = v_group_id;
+
+  elsif v_kind = 'members_update' then
+    perform public.update_ledger_members(
+      p_operation->>'groupName',
+      p_operation->'members',
+      p_operation->>'ownerAvatarUrl',
+      v_group_id
+    );
+
+  elsif v_kind = 'period_close' then
+    -- Đóng kỳ cũ trước (tránh lỗi trùng open period)
+    update public.settlement_periods
+    set end_date = (p_operation->>'endDate')::date,
+        status = 'closed',
+        settled_at = now()
+    where id = (p_operation->>'periodId')::uuid and group_id = v_group_id;
+
+    -- Mở kỳ mới
+    if p_operation->'nextPeriod' is not null then
+      v_record := p_operation->'nextPeriod';
+      insert into public.settlement_periods(id, group_id, start_date, end_date, status)
+      values (
+        (v_record->>'id')::uuid, v_group_id,
+        (v_record->>'startDate')::date, null, 'open'
+      )
+      on conflict (id) do nothing;
+    end if;
+  end if;
+end;
+$$;
+
+-- 7. Cấp quyền thực thi cho người dùng đã đăng nhập
+grant execute on function public.get_user_ledgers() to authenticated;
+grant execute on function public.get_ledger_snapshot(uuid) to authenticated;
+grant execute on function public.update_ledger_members(text, jsonb, text, uuid) to authenticated;
+grant execute on function public.apply_sync_operation(uuid, jsonb) to authenticated;
+

@@ -1,0 +1,99 @@
+Tôi đã tìm ra **chính xác 100% nguyên nhân** khiến app bị dừng ở chữ *"Đang chuẩn bị sổ chi tiêu..."*:
+
+---
+
+### 🔍 Nguyên nhân:
+1. **Thiếu cột `created_at` trên bảng `expenses` ở Supabase**:
+   - Trong hàm SQL trước đó, có dòng truy vấn `'createdAt', e.created_at`. Nhưng trong cơ sở dữ liệu Supabase, bảng `expenses` chỉ có cột `updated_at` mà chưa có cột `created_at`.
+   - Do đó, PostgreSQL báo lỗi `column e.created_at does not exist` khiến hàm tải dữ liệu bị dừng.
+2. **Khi bạn xóa dữ liệu web**:
+   - Dữ liệu lưu tạm trên máy (IndexedDB) bị xóa sạch, app gửi yêu cầu lên Supabase để kéo dữ liệu về nhưng gặp lỗi thiếu cột trên $\rightarrow$ dẫn đến việc app bị đứng chờ ở màn hình *"Đang chuẩn bị sổ chi tiêu..."*.
+
+---
+
+### 🛠️ Cách khắc phục (Chỉ mất 20 giây):
+
+Bạn mở lại mục **SQL Editor** trên [supabase.com](https://supabase.com), dán đoạn mã sau vào rồi bấm **Run**:
+
+```sql
+-- 1. Bổ sung cột created_at cho bảng expenses nếu chưa có
+alter table public.expenses add column if not exists created_at timestamptz default now();
+
+-- 2. Cập nhật lại hàm get_ledger_snapshot hoàn chỉnh và an toàn tuyệt đối
+create or replace function public.get_ledger_snapshot(p_group_id uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_group public.expense_groups%rowtype;
+  v_user_email text;
+  v_current_member_id uuid;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  v_user_email := lower(trim(coalesce(auth.jwt()->>'email', '')));
+
+  if p_group_id is not null then
+    select * into v_group from public.expense_groups g
+    where g.id = p_group_id and (
+      g.owner_user_id = auth.uid()
+      or (v_user_email <> '' and exists (
+        select 1 from public.group_members m
+        where m.group_id = g.id and lower(trim(coalesce(m.
+<truncated 1316 bytes>
+c.group_members m
+      where m.group_id = v_group.id
+    ), '[]'::jsonb),
+    'expenses', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', e.id,
+        'title', e.title,
+        'amount', e.amount_vnd,
+        'payerId', e.payer_member_id,
+        'date', e.spent_on,
+        'note', e.note,
+        'category', e.category,
+        'splitMode', e.split_mode,
+        'createdAt', coalesce(e.created_at, e.updated_at),
+        'updatedAt', e.updated_at,
+        'periodId', e.period_id,
+        'splits', coalesce((
+          select jsonb_agg(jsonb_build_object(
+            'memberId', s.member_id,
+            'amount', s.amount_vnd
+          ) order by s.member_id)
+          from public.expense_splits s
+          where s.expense_id = e.id
+        ), '[]'::jsonb)
+      ) order by e.spent_on desc, e.updated_at desc)
+      from public.expenses e
+      where e.group_id = v_group.id
+    ), '[]'::jsonb),
+    'settlements', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', s.id,
+        'fromMemberId', s.payer_member_id,
+        'toMemberId', s.receiver_member_id,
+        'amount', s.amount_vnd,
+        'date', to_char(s.settled_at at time zone 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD'),
+        'note', '',
+        'periodId', s.period_id,
+        'updatedAt', s.settled_at
+      ) order by s.settled_at desc)
+      from public.settlements s
+      where s.group_id = v_group.id
+    ), '[]'::jsonb),
+    'periods', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', p.id,
+        'startDate', p.start_date,
+        'endDate', p.end_date,
+        'status', p.status,
+        'settledAt', p.end_date
+      ) order by p.start_date desc)
+      from public.settlement_periods p
+      where p.group_id = v_group.id
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+```
+
+Sau khi bấm **Run** thành công trên Supabase, bạn quay lại tab `localhost:5173` và bấm F5 tải lại trang: app sẽ nạp ngay toàn bộ dữ liệu sổ của bạn lên màn hình mượt mà không còn bị treo hay lỗi nữa!

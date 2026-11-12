@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Download, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
+  Camera, CircleHelp, Cloud, CloudOff, Copy, Crown, DollarSign, Download, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
   Plus, ReceiptText, RefreshCw, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
   Wallet, X,
 } from 'lucide-react'
@@ -9,11 +9,11 @@ import { toCanvas } from 'html-to-image'
 import JSZip from 'jszip'
 import {
   equalSplits, getBalances, getMemberDebtBreakdown, getUnpaidTotal, makeDemoLedger, makeId, memberColor, money, normalizeLedger,
-  markClosedPeriodsSettled, suggestSettlements, today, type Expense, type Ledger, type Member, type Operation, type Settlement, type SettlementPeriod,
+  markClosedPeriodsSettled, suggestSettlements, today, type Expense, type Ledger, type LedgerListItem, type Member, type Operation, type Settlement, type SettlementPeriod,
 } from './domain'
 import { clearQueue, queueOperation, readLedger, readQueue, removeOperation, replaceOperation, writeLedger } from './lib/localStore'
 import {
-  fetchCloudLedger, fetchMonthlyExpenseTotals, initializeCloudLedger, isCloudConfigured, signIn, signOut, signUp, supabase, syncOperation,
+  fetchCloudLedger, fetchMonthlyExpenseTotals, fetchUserLedgers, initializeCloudLedger, isCloudConfigured, signIn, signOut, signUp, supabase, syncOperation,
 } from './lib/supabase'
 import { QR_PAYMENT_DATA_URL } from './qrData'
 
@@ -172,7 +172,7 @@ export default function App() {
       toastTimerRef.current = null
     }, 2800)
   }, [])
-  const [expenseFilters, setExpenseFilters] = useState({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '', periodId: '' })
+  const [expenseFilters, setExpenseFilters] = useState({ keyword: '', fromDate: '', toDate: '', category: '', memberId: '', periodId: '' })
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingCount, setPendingCount] = useState(0)
   const [syncing, setSyncing] = useState(false)
@@ -192,9 +192,18 @@ export default function App() {
     return () => document.removeEventListener('pointerdown', handleOutsideClick)
   }, [selectedChartMonth])
   const [showAccount, setShowAccount] = useState(false)
+  const [accountFocusRename, setAccountFocusRename] = useState(false)
   const [needsSetup, setNeedsSetup] = useState(false)
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
   const [authError, setAuthError] = useState('')
+  // NOTE(VI): Lý do: Quản lý danh sách sổ (sổ của tôi & sổ được mời) và lưu sổ đang chọn vào localStorage
+  // Trước: App chỉ biết duy nhất 1 sổ gắn theo auth.uid() của chủ sổ
+  // Sau: Lưu danh sách sổ userLedgers, đọc và lưu activeLedgerId vào localStorage để lần sau vào lại đúng sổ đó
+  // Test: Chuyển sang sổ được mời -> F5 lại trang -> vẫn tự động mở tiếp sổ được mời đó
+  const [userLedgers, setUserLedgers] = useState<LedgerListItem[]>([])
+  const [activeLedgerId, setActiveLedgerId] = useState<string | null>(() => {
+    try { return localStorage.getItem('chia-tien-active-ledger-id') } catch { return null }
+  })
 
   const refreshMonthlyTotals = useCallback(async () => {
     try { setCachedMonthlyTotals(await fetchMonthlyExpenseTotals()) }
@@ -215,7 +224,7 @@ export default function App() {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
   }, [])
 
-  const hydrate = useCallback(async (cloud = false) => {
+  const hydrate = useCallback(async (cloud = false, requestedGroupId?: string) => {
     if (!cloud) setCachedMonthlyTotals(null)
     const saved = await readLedger()
     if (saved) { const normalized = normalizeLedger(saved); setLedger(normalized); await writeLedger(normalized) }
@@ -227,9 +236,47 @@ export default function App() {
     setPendingCount((await readQueue()).length)
     if (cloud && isOnline) {
       try {
-        const remote = await fetchCloudLedger()
+        let targetId = requestedGroupId
+        if (!targetId) {
+          try { targetId = localStorage.getItem('chia-tien-active-ledger-id') || undefined } catch {}
+        }
+        let list: LedgerListItem[] = []
+        try {
+          list = await fetchUserLedgers()
+          setUserLedgers(list)
+        } catch {}
+
+        let remote = await fetchCloudLedger(targetId)
+        if (!remote?.id && targetId) {
+          try { localStorage.removeItem('chia-tien-active-ledger-id') } catch {}
+          remote = await fetchCloudLedger(undefined)
+        }
+
+        // NOTE(VI): Lý do: Ưu tiên thông minh 100% bằng code frontend, không cần chạy lệnh SQL trên Supabase
+        // Trường hợp người dùng vào lần đầu (chưa có targetId lưu trong localStorage):
+        // Nếu sổ cá nhân đang mở chưa có khoản chi nào (remote.expenses.length === 0),
+        // và người dùng có sổ nhóm được mời: kiểm tra xem sổ nhóm đó có khoản chi hay không.
+        // Nếu có khoản chi -> tự động ưu tiên mở sổ nhóm đó và lưu vào localStorage.
+        // Khi người dùng chủ động bấm chuyển lại sổ cá nhân trong popup Tài khoản:
+        // -> targetId được ghi vào localStorage, các lần sau luôn mở đúng sổ cá nhân mà không chạy đoạn ưu tiên này nữa.
+        // Test: Nick mới có sổ cá nhân 0đ và được mời vào sổ nhóm có khoản chi -> lần đầu tự động vào sổ nhóm; bấm chuyển về sổ cá nhân -> F5 lại vẫn mở sổ cá nhân
+        if (!targetId && remote?.id && remote.isOwner !== false && remote.expenses.length === 0 && list.length > 1) {
+          const invited = list.find((l) => !l.isOwner)
+          if (invited) {
+            try {
+              const invitedRemote = await fetchCloudLedger(invited.id)
+              if (invitedRemote?.id && invitedRemote.expenses.length > 0) {
+                remote = invitedRemote
+              }
+            } catch {}
+          }
+        }
         if (!remote?.id) setNeedsSetup(true)
         else {
+          try {
+            localStorage.setItem('chia-tien-active-ledger-id', remote.id)
+            setActiveLedgerId(remote.id)
+          } catch {}
           // NOTE(VI): Lý do: Gộp hàng đợi thao tác chưa đồng bộ (queue) vào remote để tránh ghi đè làm mất khoản chi offline khi tải lại trang
           // Trước: const normalized = normalizeLedger(remote) ghi đè thẳng bản server, làm mất các khoản chi chưa kịp đẩy lên
           // Sau: applyPendingOperations(remote, queue) bảo toàn tất cả khoản chi đang chờ sync
@@ -243,9 +290,17 @@ export default function App() {
           await refreshMonthlyTotals()
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : ''
+        const message = error instanceof Error ? error.message : (error as any)?.message || ''
         if (message.toLowerCase().includes('no ledger') || message.toLowerCase().includes('not found')) setNeedsSetup(true)
-        else setSyncNotice('Không tải được dữ liệu mới. Đang hiển thị bản lưu trên thiết bị.')
+        else {
+          setSyncNotice(message ? `Không tải được dữ liệu: ${message}` : 'Không tải được dữ liệu mới. Đang hiển thị bản lưu trên thiết bị.')
+          const savedFallback = await readLedger()
+          if (!savedFallback) {
+            const demo = makeDemoLedger()
+            setLedger(demo)
+            await writeLedger(demo)
+          }
+        }
       }
     }
   }, [isOnline, refreshMonthlyTotals])
@@ -446,7 +501,7 @@ export default function App() {
     const next = update(ledger)
     setLedger(next); await writeLedger(next)
     if (operation.kind === 'expense_upsert' || operation.kind === 'expense_delete') setCachedMonthlyTotals(sumExpenseMonths(next.expenses))
-    if (isCloudConfigured) await queueOperation(operation)
+    if (isCloudConfigured) await queueOperation({ ...operation, groupId: ledger.id })
     setPendingCount((await readQueue()).length)
     if (!isCloudConfigured) { setSyncNotice(''); flashSavedStatus() }
     else if (!isOnline) setSyncNotice('Đang offline. Thay đổi sẽ đồng bộ khi có mạng.')
@@ -468,7 +523,7 @@ export default function App() {
     const names = [1, 2, 3, 4].map((i) => String(form.get(`member${i}`) ?? '').trim())
     if (names.some((name) => !name)) return
     try {
-      const created = normalizeLedger(await initializeCloudLedger(String(form.get('name') ?? 'Sổ chi tiêu nhóm mình'), names))
+      const created = normalizeLedger(await initializeCloudLedger(String(form.get('name') ?? 'Sổ chi tiêu'), names))
       setLedger(created); await writeLedger(created); setNeedsSetup(false)
       await refreshMonthlyTotals()
     } catch (error) { setAuthError(error instanceof Error ? error.message : 'Không tạo được sổ.') }
@@ -484,7 +539,7 @@ export default function App() {
       {authMode === 'signup' && <p className="hint">Nếu email cần xác nhận, hãy mở liên kết trong hộp thư trước khi đăng nhập.</p>}
     </div></div>
   if (needsSetup && isCloudConfigured) return <div className="auth-screen"><div className="auth-card setup-card"><div className="brand-mark"><Sparkles /></div><span className="eyebrow">BẮT ĐẦU SỔ MỚI</span><h1>Nhóm mình có những ai?</h1><p>Đặt tên sổ và điền tên bốn thành viên. Bạn có thể đổi tên sau.</p>
-    <form onSubmit={(event) => void createLedger(event)} className="auth-form"><label>Tên sổ<input name="name" defaultValue="Sổ chi tiêu nhóm mình" required /></label><div className="member-input-grid">{['Thành viên 1', 'Thành viên 2', 'Thành viên 3', 'Thành viên 4'].map((label, i) => <label key={label}>{label}<input name={`member${i + 1}`} placeholder={['Linh', 'Minh', 'Anh', 'Huy'][i]} required /></label>)}</div>{authError && <div className="form-error">{authError}</div>}<button className="button primary full">Tạo sổ chi tiêu</button></form>
+    <form onSubmit={(event) => void createLedger(event)} className="auth-form"><label>Tên sổ<input name="name" defaultValue="Sổ chi tiêu" required /></label><div className="member-input-grid">{['Thành viên 1', 'Thành viên 2', 'Thành viên 3', 'Thành viên 4'].map((label, i) => <label key={label}>{label}<input name={`member${i + 1}`} placeholder={['Linh', 'Minh', 'Anh', 'Huy'][i]} required /></label>)}</div>{authError && <div className="form-error">{authError}</div>}<button className="button primary full">Tạo sổ chi tiêu</button></form>
   </div></div>
   if (!ledger) return <div className="loading-screen"><p>Đang chuẩn bị sổ chi tiêu...</p></div>
 
@@ -553,6 +608,14 @@ export default function App() {
   // Sau: Mặc định chỉ hiển thị kỳ mở + kỳ vừa chốt gần nhất; nếu muốn xem các kỳ cũ thì chọn "Tất cả các kỳ" hoặc chọn kỳ cụ thể trong bộ lọc
   // Test: Vào Lịch sử chi tiêu -> chỉ thấy hóa đơn kỳ hiện tại và kỳ vừa chốt; hóa đơn kỳ cũ hơn bị ẩn; mở Lọc -> chọn "Tất cả các kỳ" sẽ thấy toàn bộ
   const filteredExpenses = ledger.expenses.filter((expense) => {
+    // NOTE(VI): Lý do: Bổ sung ô tìm kiếm theo tên khoản chi vào bộ lọc theo yêu cầu người dùng (chỉ tìm trong trường title)
+    // Trước: Không có tìm kiếm theo tên khoản chi
+    // Sau: So khớp không phân biệt hoa thường tên khoản chi (expense.title), không tìm ở trường note hay người trả
+    // Test: Gõ tên món (ví dụ 'Bộ ga', 'Ăn vặt') -> danh sách chỉ lọc các khoản có tên chứa từ khóa đó
+    if (expenseFilters.keyword && expenseFilters.keyword.trim()) {
+      const kw = expenseFilters.keyword.trim().toLowerCase()
+      if (!expense.title.toLowerCase().includes(kw)) return false
+    }
     if (expenseFilters.periodId === 'all') {
       // Hiển thị tất cả các kỳ, không lọc theo kỳ
     } else if (expenseFilters.periodId) {
@@ -572,12 +635,9 @@ export default function App() {
     if (expenseFilters.toDate && expense.date > expenseFilters.toDate) return false
     if (expenseFilters.category && expense.category !== expenseFilters.category) return false
     if (expenseFilters.memberId && expense.payerId !== expenseFilters.memberId && !expense.splits.some((split) => split.memberId === expenseFilters.memberId)) return false
-    const isPaid = ledger.periods.find((period) => period.id === expense.periodId)?.status === 'settled'
-    if (expenseFilters.paymentStatus === 'unpaid' && isPaid) return false
-    if (expenseFilters.paymentStatus === 'paid' && !isPaid) return false
     return true
   })
-  const activeFilterCount = Object.values(expenseFilters).filter(Boolean).length
+  const activeFilterCount = Object.values(expenseFilters).filter((v) => Boolean(typeof v === 'string' ? v.trim() : v)).length
 
   // NOTE(VI): Lý do: Logic in bill thông minh khi chưa chọn bộ lọc:
   // - Nếu có bộ lọc: in theo bộ lọc người dùng chọn
@@ -598,10 +658,10 @@ export default function App() {
           const found = ledger.periods.find((p) => p.id === expenseFilters.periodId)
           if (found) {
             subtitle = found.status === 'open'
-              ? `Kỳ hiện tại (từ ${formatDate(found.startDate)} đến nay)`
+              ? 'Kỳ hiện tại'
               : found.endDate
-                ? `Kỳ ${formatDate(found.startDate)} – ${formatDate(found.endDate)} (Đã chốt sổ)`
-                : `Kỳ từ ${formatDate(found.startDate)} (Đã chốt sổ)`
+                ? `${formatDate(found.startDate)} – ${formatDate(found.endDate)}`
+                : `Từ ${formatDate(found.startDate)}`
           }
         }
       }
@@ -789,28 +849,75 @@ export default function App() {
     if (!ledger) return
     const nextName = groupName !== undefined ? (groupName.trim() || ledger.name) : ledger.name; const nextOwnerAvatar = ownerAvatarUrl !== undefined ? ownerAvatarUrl : ledger.ownerAvatarUrl; const updated: Ledger = { ...ledger, name: nextName, members, ownerAvatarUrl: nextOwnerAvatar }
     setLedger(updated); await writeLedger(updated)
-    if (isCloudConfigured) await queueOperation({ opId: makeId(), kind: 'members_update', groupName: updated.name, members, ownerAvatarUrl: updated.ownerAvatarUrl })
+    setUserLedgers((prev) => prev.map((item) => item.id === updated.id ? { ...item, name: updated.name } : item))
+    if (isCloudConfigured) await queueOperation({ opId: makeId(), kind: 'members_update', groupName: updated.name, members, ownerAvatarUrl: updated.ownerAvatarUrl, groupId: updated.id })
     setPendingCount((await readQueue()).length)
     if (isCloudConfigured && !isOnline) setSyncNotice('Tên đã lưu trên thiết bị. Sẽ đồng bộ khi có mạng.')
+  }
+
+  // NOTE(VI): Lý do: Chuyển đổi giữa các sổ chi tiêu (sổ của tôi và sổ được mời) và lưu sổ đang chọn vào localStorage
+  // Trước: Không có tính năng chuyển sổ
+  // Sau: Ghi activeLedgerId vào localStorage, gọi hydrate nạp sổ mới, đóng modal và báo toast
+  // Test: Bấm chọn sổ khác trong popup Tài khoản -> chuyển sang sổ mới ngay
+  async function switchLedger(targetId: string) {
+    try {
+      localStorage.setItem('chia-tien-active-ledger-id', targetId)
+      setActiveLedgerId(targetId)
+      await hydrate(true, targetId)
+      setShowAccount(false)
+      showToast('Đã chuyển sang sổ: ' + (userLedgers.find((l) => l.id === targetId)?.name || 'Sổ mới'))
+    } catch (err: any) {
+      alert(err?.message || 'Không thể chuyển sổ')
+    }
   }
 
   return <><div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><Wallet /></div><div><strong>chia tiền</strong><span>đi chơi cùng nhau</span></div></div>
-      <div className="trip-selector"><div className="trip-icon">✳</div><div className="trip-copy"><span>SỔ CHI TIÊU</span><strong>{ledger.name}</strong></div><ChevronDown size={15} /></div>
+      <div
+        className="trip-selector"
+        onClick={() => { if (userLedgers.length > 1) setShowAccount(true) }}
+        style={{ cursor: userLedgers.length > 1 ? 'pointer' : 'default' }}
+      >
+        <div className="trip-icon">{ledger.isOwner === false ? '👥' : '✳'}</div>
+        <div className="trip-copy">
+          <span>{ledger.isOwner === false ? 'SỔ ĐƯỢC MỜI' : 'SỔ CHI TIÊU'}</span>
+          <strong>{ledger.name}</strong>
+        </div>
+        {userLedgers.length > 1 && <ChevronDown size={15} />}
+      </div>
       <div className="nav-label">MENU</div><nav><button className="nav-item active"><ReceiptText size={18} strokeWidth={1.9} /><span>Sổ chi tiêu</span></button></nav>
       <div className="sidebar-bottom"><button className="help-card" onClick={() => setSyncNotice('Thêm khoản chi, chọn người trả và chia phần cho các thành viên. Số dư được cập nhật tự động.')}><span className="help-icon"><CircleHelp size={16} /></span><span><strong>Cần trợ giúp?</strong><small>Cách chia tiền hoạt động</small></span><ArrowUpRight size={14} /></button></div>
     </aside>
 
     <main className="main-area">
       <header className="topbar">
-        {/* NOTE(VI): Lý do: Đổi tiêu đề app thành SỔ CHI TIÊU NHÓM, bỏ dòng phụ "Tổng chi tiêu nhóm", làm to chữ và căn giữa thẳng hàng với icon ví
-            Trước: <strong>SỔ CHI TIÊU</strong><small>Tổng chi tiêu nhóm</small> (2 dòng, chữ nhỏ, bị lệch lên trên so với icon ví)
-            Sau: <strong>SỔ CHI TIÊU NHÓM</strong> (1 dòng, chữ to hơn, căn giữa chuẩn với icon ví)
-            Test: Xem góc trên bên trái header app -> Tiêu đề SỔ CHI TIÊU NHÓM to rõ, nằm chính giữa theo chiều dọc với icon ví */}
-        <div className="app-wordmark">
+        {/* NOTE(VI): Lý do: Hiển thị tên sổ chi tiêu và gắn nhãn phân biệt sổ tự tạo vs sổ được mời; click mở danh sách sổ nếu có nhiều sổ
+            Trước: Tiêu đề tĩnh SỔ CHI TIÊU NHÓM
+            Sau: Hiển thị tên sổ thực tế, có nhãn "Được mời" nếu là thành viên, click mở modal Tài khoản để chuyển sổ
+            Test: Mở sổ được mời -> Thấy nhãn 👥 Được mời kèm tên thành viên của mình */}
+        <div
+          className="app-wordmark"
+          onClick={() => { if (userLedgers.length > 1) setShowAccount(true) }}
+          style={{ cursor: userLedgers.length > 1 ? 'pointer' : 'default' }}
+          title={userLedgers.length > 1 ? 'Bấm để đổi sổ chi tiêu' : undefined}
+        >
           <span className="wordmark-icon"><Wallet size={18} /></span>
-          <strong>SỔ CHI TIÊU NHÓM</strong>
+          {/* NOTE(VI): Lý do: Bỏ nút cây bút đổi tên sổ ở tiêu đề app theo yêu cầu người dùng, việc đổi tên thực hiện bên trong mục Tài khoản
+              Trước: Có nút cây bút ✏️ bên cạnh tên sổ ở tiêu đề
+              Sau: Chỉ hiển thị tên sổ (và mũi tên nếu có nhiều sổ), muốn sửa tên thì mở mục Tài khoản
+              Test: Nhìn lên tiêu đề app -> Không còn icon cây bút; vào Tài khoản -> vẫn đổi tên được */}
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <strong>{ledger.name || 'Sổ chi tiêu'}</strong>
+              {userLedgers.length > 1 && <ChevronDown size={13} style={{ color: '#287b5d' }} />}
+            </div>
+            {ledger.isOwner === false && (
+              <span style={{ fontSize: '10px', color: '#166534', fontWeight: 600 }}>
+                👥 Được mời {ledger.currentUserEmail ? `(${ledger.members.find(m => m.id === ledger.currentMemberId)?.name || ledger.currentUserEmail})` : ''}
+              </span>
+            )}
+          </div>
         </div>
         <div className="top-actions">
           {(!isOnline || syncing || pendingCount > 0 || showSavedStatus) && <div className={`sync-status ${isOnline ? 'online' : 'offline'}`} title={!isOnline ? 'Đang offline' : syncing ? 'Đang đồng bộ' : pendingCount ? `${pendingCount} thay đổi chờ đồng bộ` : 'Đã đồng bộ'}>{isOnline ? <Cloud size={15} /> : <CloudOff size={15} />}<span>{!isOnline ? 'Offline' : syncing ? 'Đang lưu' : pendingCount ? `${pendingCount} chờ` : 'Đã lưu'}</span></div>}
@@ -837,13 +944,15 @@ export default function App() {
               Test: Xem phần Lịch sử chi tiêu -> Tiêu đề gọn gàng, căn thẳng hàng ngang tuyệt đối với 2 nút In bill và Lọc */}
           <CurrentMoneyOverview members={calculationMembers} balances={balances} />
 
-          {/* NOTE(VI): Lý do: Gộp chức năng Chốt sổ vào ngay dưới khung Số dư hiện tại theo yêu cầu người dùng
-              Trước: Phải bấm chuyển tab sang menu "Chốt sổ" riêng biệt ở thanh điều hướng dưới cùng
-              Sau: Vùng Kỳ hiện tại nằm dưới Số dư, click vào sẽ xổ thông tin xuống (đẩy Lịch sử chi tiêu xuống), gồm: thông báo & nút Chốt sổ kỳ này, bảng Gợi ý chuyển tiền kèm nút Đã trả, và nút mở popup Lịch sử trả tiền
-              Test: Click vào thanh "Kỳ hiện tại" -> xổ xuống thông báo, nút chốt sổ, gợi ý chuyển tiền; bấm "Chốt sổ kỳ này" -> mở popup xác nhận chốt; bấm "Xem lịch sử trả tiền" -> mở popup lịch sử trả tiền */}
+          {/* NOTE(VI): Lý do: Phân quyền - Chỉ chủ sổ mới được click vào kỳ chi tiêu hiện tại để mở chức năng chốt sổ
+              Trước: Bất kỳ ai vào sổ đều click được vào kỳ hiện tại và bấm chốt sổ
+              Sau: Nếu là tài khoản được mời (ledger.isOwner === false): khóa click, con trỏ mặc định (default), ẩn hoàn toàn nút Chốt sổ; chỉ chủ sổ (isOwner !== false) mới mở được
+              Test: Đăng nhập tài khoản được mời -> Thấy khung Kỳ hiện tại là chữ tĩnh, không có nút Chốt sổ, bấm vào không có phản hồi */}
           <section
             className="panel period-accordion-panel"
+            style={{ cursor: ledger.isOwner !== false ? 'pointer' : 'default' }}
             onClick={() => {
+              if (ledger.isOwner === false) return
               setShowSettlementSection((open) => {
                 const next = !open
                 if (next && isCloudConfigured && isOnline) {
@@ -858,26 +967,28 @@ export default function App() {
                 <h2>Kỳ chi tiêu hiện tại</h2>
                 <span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span>
               </div>
-              <div className="period-accordion-action" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <button
-                  type="button"
-                  className={`filter-button ${showSettlementSection ? 'active' : ''}`}
-                  aria-expanded={showSettlementSection}
-                  style={{ pointerEvents: 'none' }}
-                >
-                  <ChevronDown
-                    size={14}
-                    style={{
-                      transform: showSettlementSection ? 'rotate(180deg)' : 'none',
-                      transition: 'transform 0.2s ease',
-                    }}
-                  />
-                  <span>{showSettlementSection ? 'Thu gọn' : 'Chốt sổ'}</span>
-                </button>
-              </div>
+              {ledger.isOwner !== false && (
+                <div className="period-accordion-action" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <button
+                    type="button"
+                    className={`filter-button ${showSettlementSection ? 'active' : ''}`}
+                    aria-expanded={showSettlementSection}
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    <ChevronDown
+                      size={14}
+                      style={{
+                        transform: showSettlementSection ? 'rotate(180deg)' : 'none',
+                        transition: 'transform 0.2s ease',
+                      }}
+                    />
+                    <span>{showSettlementSection ? 'Thu gọn' : 'Chốt sổ'}</span>
+                  </button>
+                </div>
+              )}
             </div>
 
-            {showSettlementSection && (
+            {ledger.isOwner !== false && showSettlementSection && (
               <div className="settlement-expanded-container">
                 {/* 1. Thông báo & nút chốt sổ */}
                 <div
@@ -941,14 +1052,26 @@ export default function App() {
           <section className="panel full-panel">
             <div className="panel-heading"><h2>Lịch sử chi tiêu</h2><div className="expense-panel-actions"><button type="button" className="filter-button" onClick={() => setShowBillModal(true)}><Printer size={14} /><span>In bill</span></button><button type="button" className={`filter-button ${showExpenseFilters ? 'active' : ''}`} aria-expanded={showExpenseFilters} onClick={() => setShowExpenseFilters((open) => !open)}><Filter size={14} /><span>Lọc</span>{activeFilterCount > 0 && <span className="filter-badge">{activeFilterCount}</span>}</button></div></div>
             {showExpenseFilters && <div className="expense-filters"><div className="expense-filter-fields">
+              {/* NOTE(VI): Lý do: Bổ sung ô tìm kiếm tên khoản chi và cập nhật định dạng các tùy chọn kỳ chốt sổ theo yêu cầu người dùng
+                  Trước: Không có tìm kiếm theo tên; Kỳ hiện tại có thời gian trong ngoặc; Kỳ vừa chốt có chữ 'Kỳ vừa chốt: ' và '(Đã chốt)'
+                  Sau: Thêm ô 'Tìm theo tên khoản chi' (chỉ tìm trong trường title); 'Kỳ hiện tại' gọn gàng; Các kỳ đã chốt hiển thị trực tiếp khoảng thời gian 'startDate – endDate'
+                  Test: Mở bộ lọc -> Gõ tên khoản chi -> lọc chính xác; Mở dropdown kỳ chốt sổ -> Thấy 'Kỳ hiện tại' và các khoảng thời gian rõ ràng, tinh tế */}
+              <label style={{ gridColumn: 'span 2' }}>Tìm theo tên khoản chi
+                <input
+                  type="text"
+                  placeholder="Nhập tên khoản chi..."
+                  value={expenseFilters.keyword}
+                  onChange={(event) => setExpenseFilters({ ...expenseFilters, keyword: event.target.value })}
+                />
+              </label>
               <label style={{ gridColumn: 'span 2' }}>Kỳ chốt sổ
                 <select value={expenseFilters.periodId} onChange={(event) => setExpenseFilters({ ...expenseFilters, periodId: event.target.value })}>
                   <option value="">Kỳ hiện tại & kỳ vừa chốt (mặc định)</option>
                   <option value="all">Tất cả các kỳ</option>
-                  {openPeriod && <option value={openPeriod.id}>Kỳ hiện tại (từ {formatDate(openPeriod.startDate)} đến nay)</option>}
-                  {closedPeriods.map((period, index) => (
+                  {openPeriod && <option value={openPeriod.id}>Kỳ hiện tại</option>}
+                  {closedPeriods.map((period) => (
                     <option key={period.id} value={period.id}>
-                      {index === 0 ? 'Kỳ vừa chốt: ' : ''}{period.endDate ? `Kỳ ${formatDate(period.startDate)} – ${formatDate(period.endDate)}` : `Kỳ từ ${formatDate(period.startDate)}`} (Đã chốt)
+                      {period.endDate ? `${formatDate(period.startDate)} – ${formatDate(period.endDate)}` : `Từ ${formatDate(period.startDate)}`}
                     </option>
                   ))}
                 </select>
@@ -957,8 +1080,7 @@ export default function App() {
               <label>Đến ngày<input type="date" value={expenseFilters.toDate} onChange={(event) => setExpenseFilters({ ...expenseFilters, toDate: event.target.value })} /></label>
               <label>Danh mục<select value={expenseFilters.category} onChange={(event) => setExpenseFilters({ ...expenseFilters, category: event.target.value })}><option value="">Tất cả danh mục</option>{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
               <label>Thành viên<select value={expenseFilters.memberId} onChange={(event) => setExpenseFilters({ ...expenseFilters, memberId: event.target.value })}><option value="">Tất cả thành viên</option>{ledger.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
-              <label>Trạng thái<select value={expenseFilters.paymentStatus} onChange={(event) => setExpenseFilters({ ...expenseFilters, paymentStatus: event.target.value })}><option value="">Tất cả trạng thái</option><option value="unpaid">Chưa chốt sổ</option><option value="paid">Đã chốt sổ</option></select></label>
-            </div><div className="filters-footer"><span>{filteredExpenses.length} khoản phù hợp</span><button disabled={activeFilterCount === 0} onClick={() => setExpenseFilters({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '', periodId: '' })}>Xóa bộ lọc</button></div></div>}
+            </div><div className="filters-footer"><span>{filteredExpenses.length} khoản phù hợp</span><button disabled={activeFilterCount === 0} onClick={() => setExpenseFilters({ keyword: '', fromDate: '', toDate: '', category: '', memberId: '', periodId: '' })}>Xóa bộ lọc</button></div></div>}
             {/* NOTE(VI): Lý do: Giữ nguyên quy tắc khi thêm mới (khoản thêm mới đưa lên đầu ngày/ngày mới), nhưng khi sửa khoản chi thì giữ nguyên vị trí cũ không đưa lên đầu theo yêu cầu người dùng
                 Trước: Sắp xếp theo b.updatedAt -> khi sửa khoản chi thì updatedAt đổi mới nhất, làm khoản đó nhảy lên đầu danh sách
                 Sau: Sắp xếp theo b.date desc rồi đến (b.createdAt ?? b.updatedAt ?? '') desc -> khi thêm mới có createdAt mới nhất nên vẫn lên đầu; khi sửa thì createdAt giữ nguyên vị trí ban đầu không bị nhảy
@@ -1007,15 +1129,38 @@ export default function App() {
       groupName={ledger.name}
       ownerAvatarUrl={ledger.ownerAvatarUrl}
       members={ledger.members}
-      onClose={() => setShowAccount(false)}
-      onAddMember={async (name) => {
-        const newMember: Member = { id: makeId(), name, sortOrder: Math.max(-1, ...ledger.members.map((member) => member.sortOrder)) + 1, active: true }
+      isOwner={ledger.isOwner !== false}
+      userLedgers={userLedgers}
+      activeLedgerId={activeLedgerId ?? ledger.id}
+      focusRename={accountFocusRename}
+      onClose={() => {
+        setShowAccount(false)
+        setAccountFocusRename(false)
+      }}
+      onUpdateGroupName={async (newName) => {
+        await updateMembers(ledger.members, newName)
+        showToast('Đã đổi tên sổ chi tiêu thành công')
+      }}
+      onSwitchLedger={switchLedger}
+      onAddMember={async (name, memberEmail) => {
+        const newMember: Member = {
+          id: makeId(),
+          name,
+          sortOrder: Math.max(-1, ...ledger.members.map((member) => member.sortOrder)) + 1,
+          active: true,
+          email: memberEmail ? memberEmail.toLowerCase().trim() : null,
+        }
         await updateMembers([...ledger.members, newMember], ledger.name)
         showToast('Thêm thành viên thành công')
       }}
-      onRenameMember={async (memberId, newName) => {
-        const updatedMembers = ledger.members.map((member) => member.id === memberId ? { ...member, name: newName } : member)
+      onUpdateMember={async (memberId, newName, memberEmail) => {
+        const updatedMembers = ledger.members.map((member) =>
+          member.id === memberId
+            ? { ...member, name: newName, email: memberEmail ? memberEmail.toLowerCase().trim() : null }
+            : member
+        )
         await updateMembers(updatedMembers, ledger.name)
+        showToast('Đã lưu thông tin thành viên')
       }}
       onUpdateMemberAvatar={async (memberId, avatarUrl) => {
         const updatedMembers = ledger.members.map((member) => member.id === memberId ? { ...member, avatarUrl } : member)
@@ -2503,14 +2648,20 @@ function SettlementHistoryModal({
 function AccountModal({
   email,
   cloudEnabled,
-  groupName: _groupName,
+  groupName,
   ownerAvatarUrl,
   members,
+  isOwner,
+  userLedgers,
+  activeLedgerId,
+  focusRename,
   onClose,
+  onUpdateGroupName,
   onAddMember,
-  onRenameMember,
+  onUpdateMember,
   onUpdateMemberAvatar,
   onUpdateOwnerAvatar,
+  onSwitchLedger,
   onLogout,
 }: {
   email: string
@@ -2518,18 +2669,37 @@ function AccountModal({
   groupName: string
   ownerAvatarUrl?: string | null
   members: Member[]
+  isOwner: boolean
+  userLedgers: LedgerListItem[]
+  activeLedgerId: string | null
+  focusRename?: boolean
   onClose: () => void
-  onAddMember: (name: string) => Promise<void>
-  onRenameMember: (memberId: string, newName: string) => Promise<void>
+  onUpdateGroupName?: (newName: string) => Promise<void>
+  onAddMember: (name: string, email?: string | null) => Promise<void>
+  onUpdateMember: (memberId: string, newName: string, email: string | null) => Promise<void>
   onUpdateMemberAvatar: (memberId: string, avatarUrl: string | null) => Promise<void>
   onUpdateOwnerAvatar: (avatarUrl: string | null) => Promise<void>
+  onSwitchLedger: (ledgerId: string) => Promise<void>
   onLogout: () => void
 }) {
   const activeMembers = members.filter((member) => member.active)
+  const [editingLedgerId, setEditingLedgerId] = useState<string | null>(focusRename ? (activeLedgerId || 'current') : null)
+  const [tempGroupName, setTempGroupName] = useState(groupName)
+  const [savingGroupName, setSavingGroupName] = useState(false)
+
+  useEffect(() => {
+    if (focusRename) {
+      setEditingLedgerId(activeLedgerId || 'current')
+      setTempGroupName(groupName)
+    }
+  }, [focusRename, activeLedgerId, groupName])
+
   const [addingMember, setAddingMember] = useState(false)
   const [newMemberName, setNewMemberName] = useState('')
+  const [newMemberEmail, setNewMemberEmail] = useState('')
   const [editingMember, setEditingMember] = useState<Member | null>(null)
   const [editMemberName, setEditMemberName] = useState('')
+  const [editMemberEmail, setEditMemberEmail] = useState('')
   const [savingMember, setSavingMember] = useState(false)
   const [memberError, setMemberError] = useState('')
   const [previewAvatar, setPreviewAvatar] = useState<{ url?: string | null; name: string; color?: string; initial?: string } | null>(null)
@@ -2618,9 +2788,15 @@ function AccountModal({
   async function submitNewMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const name = newMemberName.trim()
+    const email = newMemberEmail.trim() || null
     if (!name) return
     setSavingMember(true); setMemberError('')
-    try { await onAddMember(name); setNewMemberName(''); setAddingMember(false) }
+    try {
+      await onAddMember(name, email)
+      setNewMemberName('')
+      setNewMemberEmail('')
+      setAddingMember(false)
+    }
     catch (error) { setMemberError(error instanceof Error ? error.message : 'Không thể thêm thành viên.') }
     finally { setSavingMember(false) }
   }
@@ -2628,17 +2804,16 @@ function AccountModal({
   async function submitEditMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const name = editMemberName.trim()
+    const email = editMemberEmail.trim() || null
     if (!name || !editingMember) return
-    if (name === editingMember.name) {
-      setEditingMember(null)
-      return
-    }
     setSavingMember(true); setMemberError('')
     try {
-      await onRenameMember(editingMember.id, name)
-      setEditingMember(null); setEditMemberName('')
+      await onUpdateMember(editingMember.id, name, email)
+      setEditingMember(null)
+      setEditMemberName('')
+      setEditMemberEmail('')
     }
-    catch (error) { setMemberError(error instanceof Error ? error.message : 'Không thể đổi tên thành viên.') }
+    catch (error) { setMemberError(error instanceof Error ? error.message : 'Không thể lưu thành viên.') }
     finally { setSavingMember(false) }
   }
 
@@ -2744,53 +2919,246 @@ function AccountModal({
                 )}
               </span>
               <span
-                className="member-name-clickable"
+                className={isOwner ? "member-name-clickable" : ""}
                 onClick={() => {
+                  if (!isOwner) return
                   setAddingMember(false)
                   setMemberError('')
                   setEditingMember(member)
                   setEditMemberName(member.name)
+                  setEditMemberEmail(member.email || '')
                 }}
-                title="Bấm để đổi tên thành viên"
+                title={isOwner ? "Bấm để đổi tên & gắn email đăng nhập" : undefined}
               >
                 {member.name}
               </span>
+              {member.email && (
+                <span
+                  style={{
+                    fontSize: '11px',
+                    color: '#166534',
+                    background: '#dcfce7',
+                    padding: '1px 6px',
+                    borderRadius: '4px',
+                    marginLeft: '4px',
+                    fontWeight: 500,
+                  }}
+                  title={`Đã gắn tài khoản: ${member.email}`}
+                >
+                  🔗 {member.email}
+                </span>
+              )}
             </div>
           )
         })}
       </div>
-      {!addingMember && !editingMember && (
-        <button type="button" className="button secondary account-manage-members" onClick={() => { setAddingMember(true); setMemberError('') }}>
+      {!isOwner && (
+        <div style={{ fontSize: '12px', color: '#4b5563', background: '#f3f4f6', padding: '8px 10px', borderRadius: '6px', marginTop: '8px' }}>
+          ℹ️ Người dùng đang xem sổ với vai trò <b>Thành viên được mời</b>. Chỉ chủ sổ mới có quyền thêm/sửa thành viên và gắn email tài khoản.
+        </div>
+      )}
+      {isOwner && !addingMember && !editingMember && (
+        <button type="button" className="button secondary account-manage-members" onClick={() => { setAddingMember(true); setMemberError(''); setNewMemberName(''); setNewMemberEmail('') }}>
           <UserRoundPlus size={15} /> Thêm thành viên
         </button>
       )}
-      {addingMember && (
+      {isOwner && addingMember && (
         <form className="account-add-member-form" onSubmit={(event) => void submitNewMember(event)}>
-          <label>Tên thành viên mới<input autoFocus value={newMemberName} onChange={(event) => setNewMemberName(event.target.value)} maxLength={60} placeholder="Nhập tên thành viên" required /></label>
+          <label>Tên thành viên mới
+            <input autoFocus value={newMemberName} onChange={(event) => setNewMemberName(event.target.value)} maxLength={60} placeholder="Nhập tên thành viên" required />
+          </label>
+          <label style={{ marginTop: '8px' }}>
+            <span>Email đăng nhập (để người dùng này cùng vào sổ)</span>
+            <input type="email" value={newMemberEmail} onChange={(event) => setNewMemberEmail(event.target.value)} placeholder="ví dụ: email@gmail.com (không bắt buộc)" />
+          </label>
           {memberError && <div className="form-error">{memberError}</div>}
-          <div>
-            <button type="button" className="button secondary" disabled={savingMember} onClick={() => { setAddingMember(false); setNewMemberName(''); setMemberError('') }}>Hủy</button>
+          <div style={{ marginTop: '8px' }}>
+            <button type="button" className="button secondary" disabled={savingMember} onClick={() => { setAddingMember(false); setNewMemberName(''); setNewMemberEmail(''); setMemberError('') }}>Hủy</button>
             <button type="submit" className="button primary" disabled={savingMember || !newMemberName.trim()}>{savingMember ? 'Đang thêm...' : 'Thêm'}</button>
           </div>
         </form>
       )}
-      {editingMember && (
+      {isOwner && editingMember && (
         <form className="account-add-member-form" onSubmit={(event) => void submitEditMember(event)}>
-          {/* NOTE(VI): Lý do: Bỏ nút "Đổi ảnh" thừa vì click vào avatar ở chế độ sửa tên đã mở file picker rồi
-              Trước: Có nút "Đổi ảnh" riêng bên cạnh ô nhập tên
-              Sau: Chỉ còn label + input, bấm vào avatar để đổi ảnh
-              Test: Bấm tên thành viên > chế độ sửa tên hiện ra, click avatar thành viên đó để đổi ảnh */}
-          <label>Đổi tên thành viên: <strong>{editingMember.name}</strong>
-            <input autoFocus value={editMemberName} onChange={(event) => setEditMemberName(event.target.value)} maxLength={60} placeholder="Nhập tên mới" required />
+          {/* NOTE(VI): Lý do: Bỏ tên hiển thị bên ngoài ô nhập theo yêu cầu người dùng, chỉ giữ tên bên trong ô nhập để xem hoặc sửa; đổi text "bạn" thành "người dùng"
+              Trước: <label>Tên thành viên: <strong>{editingMember.name}</strong> ... </label> và các dòng nhắc có chữ "bạn"
+              Sau: <label><span>Tên thành viên</span> ... </label>, placeholder email@gmail.com, text "người dùng"
+              Test: Bấm vào thành viên để sửa -> Không còn dòng in tên ngoài ô nhập; thấy text "người dùng" rõ ràng */}
+          <label><span>Tên thành viên</span>
+            <input autoFocus value={editMemberName} onChange={(event) => setEditMemberName(event.target.value)} maxLength={60} placeholder="Nhập tên thành viên" required />
+          </label>
+          <label style={{ marginTop: '8px' }}>
+            <span>Email đăng nhập (để người dùng này cùng vào sổ)</span>
+            <input type="email" value={editMemberEmail} onChange={(event) => setEditMemberEmail(event.target.value)} placeholder="ví dụ: email@gmail.com (không bắt buộc)" />
+            <small style={{ color: '#6b7280', fontSize: '11px', display: 'block', marginTop: '3px' }}>
+              Người dùng đăng nhập đúng email này sẽ tự động được vào sổ với tên {editingMember.name}.
+            </small>
           </label>
           {memberError && <div className="form-error">{memberError}</div>}
-          <div>
-            <button type="button" className="button secondary" disabled={savingMember} onClick={() => { setEditingMember(null); setEditMemberName(''); setMemberError('') }}>Hủy</button>
-            <button type="submit" className="button primary" disabled={savingMember || !editMemberName.trim()}>{savingMember ? 'Đang lưu...' : 'Lưu tên'}</button>
+          <div style={{ marginTop: '8px' }}>
+            <button type="button" className="button secondary" disabled={savingMember} onClick={() => { setEditingMember(null); setEditMemberName(''); setEditMemberEmail(''); setMemberError('') }}>Hủy</button>
+            <button type="submit" className="button primary" disabled={savingMember || !editMemberName.trim()}>{savingMember ? 'Đang lưu...' : 'Lưu'}</button>
           </div>
         </form>
       )}
     </section>
+
+    {/* NOTE(VI): Lý do: Bổ sung danh sách các sổ chi tiêu của người dùng (sổ do mình tạo và sổ được mời)
+        Trước: Chỉ hiển thị sổ mặc định
+        Sau: Hiển thị đầy đủ các sổ, có nhãn Chủ sổ / Được mời, bấm vào đổi sổ ngay lập tức và lưu vào localStorage
+        Test: Có 2 sổ -> thấy danh sách 2 sổ -> bấm đổi sổ -> chuyển sang sổ kia và tải lại dữ liệu */}
+    {/* NOTE(VI): Lý do: Gộp tính năng đổi tên sổ chi tiêu ✏️ trực tiếp vào danh sách "Sổ chi tiêu của bạn" theo yêu cầu người dùng
+        Trước: Có 2 khung riêng làm tên sổ bị lặp lại 2 lần
+        Sau: Gộp nút ✏️ Đổi tên vào từng sổ trong danh sách "Sổ chi tiêu của bạn" (chỉ chủ sổ mới có quyền đổi); bỏ khung tên sổ độc lập
+        Test: Mở popup Tài khoản -> thấy danh sách sổ -> bấm icon ✏️ cạnh tên sổ của mình -> nhập tên mới và lưu -> tên sổ cập nhật tức thì */}
+    {(() => {
+      const displayLedgers: LedgerListItem[] = userLedgers.length > 0
+        ? userLedgers
+        : [{ id: activeLedgerId || 'current', name: groupName, isOwner: isOwner }]
+      return (
+        <section className="account-group-info" style={{ marginTop: '12px', borderTop: '1px solid #e5e7eb', paddingTop: '12px' }}>
+          <div className="account-group-heading"><span>Sổ chi tiêu của người dùng ({displayLedgers.length})</span></div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            {displayLedgers.map((l) => {
+              const isActive = (l.id === activeLedgerId) || (displayLedgers.length === 1)
+              const isEditingThis = editingLedgerId === l.id || (editingLedgerId === 'current' && isActive)
+              return (
+                <div
+                  key={l.id}
+                  onClick={() => { if (!isActive && !isEditingThis) void onSwitchLedger(l.id) }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    background: isActive ? '#f0fdf4' : '#ffffff',
+                    border: isActive ? '1.5px solid #22c55e' : '1px solid #e5e7eb',
+                    cursor: (isActive || isEditingThis) ? 'default' : 'pointer',
+                  }}
+                >
+                  {isEditingThis ? (
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault()
+                        const trimmed = tempGroupName.trim()
+                        if (!trimmed || !onUpdateGroupName) return
+                        setSavingGroupName(true)
+                        setMemberError('')
+                        try {
+                          await onUpdateGroupName(trimmed)
+                          setEditingLedgerId(null)
+                        } catch (err: any) {
+                          setMemberError(err?.message || 'Không thể đổi tên sổ.')
+                        } finally {
+                          setSavingGroupName(false)
+                        }
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ display: 'flex', gap: '8px', alignItems: 'center', width: '100%' }}
+                    >
+                      <input
+                        type="text"
+                        value={tempGroupName}
+                        onChange={(e) => setTempGroupName(e.target.value)}
+                        style={{ flex: 1, padding: '5px 8px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '13px', outline: 'none' }}
+                        placeholder="Nhập tên mới..."
+                        required
+                        autoFocus
+                      />
+                      <button
+                        type="submit"
+                        className="button primary"
+                        style={{ padding: '4px 10px', fontSize: '12px', height: '28px', whiteSpace: 'nowrap' }}
+                        disabled={savingGroupName || !tempGroupName.trim()}
+                      >
+                        {savingGroupName ? 'Đang lưu...' : 'Lưu'}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-button"
+                        style={{ fontSize: '12px', padding: '4px 6px', whiteSpace: 'nowrap' }}
+                        onClick={() => setEditingLedgerId(null)}
+                      >
+                        Hủy
+                      </button>
+                    </form>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <strong style={{ fontSize: '13px', color: '#111827' }}>{l.name}</strong>
+                          <span style={{
+                            fontSize: '10px',
+                            fontWeight: 600,
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            background: l.isOwner ? '#fef3c7' : '#e0e7ff',
+                            color: l.isOwner ? '#92400e' : '#3730a3',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                          }}>
+                            {l.isOwner ? (
+                              <>
+                                <Crown size={11} strokeWidth={2.2} />
+                                <span>Chủ sổ</span>
+                              </>
+                            ) : (
+                              '👥 Được mời'
+                            )}
+                          </span>
+                          {l.isOwner && (
+                            <button
+                              type="button"
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                padding: '2px 4px',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                color: '#6b7280',
+                                borderRadius: '4px',
+                              }}
+                              title="Đổi tên sổ"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setEditingLedgerId(l.id)
+                                setTempGroupName(l.name)
+                              }}
+                            >
+                              <Pencil size={11} />
+                            </button>
+                          )}
+                        </div>
+                        {!l.isOwner && l.linkedMemberName && (
+                          <span style={{ fontSize: '11px', color: '#6b7280' }}>
+                            Người dùng: <b>{l.linkedMemberName}</b>
+                          </span>
+                        )}
+                      </div>
+                      {isActive ? (
+                        <span style={{ fontSize: '12px', color: '#16a34a', fontWeight: 600 }}>✓ Đang mở</span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="button secondary"
+                          style={{ height: '28px', fontSize: '12px', padding: '0 10px', whiteSpace: 'nowrap' }}
+                          onClick={(e) => { e.stopPropagation(); void onSwitchLedger(l.id) }}
+                        >
+                          Mở sổ này
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )
+    })()}
     {/* NOTE(VI): Lý do: Bổ sung mục "Thông tin phiên bản" có nút kiểm tra bản mới và cập nhật
         Trước: Chỉ có 1 dòng text nhỏ hiển thị số phiên bản
         Sau: Section đầy đủ hiển thị số bản hiện tại, nút "Kiểm tra bản mới", thông báo trạng thái và nút "Cập nhật ngay" nếu có bản mới

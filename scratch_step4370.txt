@@ -1,0 +1,22 @@
+Created At: 2026-11-12T15:06:00+07:00
+Completed At: 2026-11-12T15:06:02+07:00
+Created At: 2026-11-12T15:06:00+07:00
+Completed At: 2026-11-12T15:06:02+07:00
+Command exited with code 0.
+
+Command output:
+Created At: 2026-11-04T15:19:11+07:00
+Completed At: 2026-11-04T15:19:15+07:00
+Command exited with code 0.
+
+Command output:
+
+> supabase\migrations\202611010001_initial_schema.sql:107:create or replace function public.get_ledger_snapshot()
+  supabase\migrations\202611010001_initial_schema.sql:108:returns jsonb language plpgsql security definer set 
+search_path = '' as $$
+  supabase\migrations\202611010001_initial_schema.sql:109:declare v_group public.expense_groups%rowtype; v_result 
+jsonb;
+  supabase\migrations\202611010001_initial_schema.sql:110:begin
+  supabase\migrations\202611010001_initial_schema.sql:111:  select * into v_group from public.expense_groups where 
+owner_user_id = auth.uid();
+  supabase\migrations\202611010001_initial_schema.sql:112:  if v_group.id is null then re

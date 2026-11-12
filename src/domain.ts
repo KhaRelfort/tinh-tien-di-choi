@@ -1,8 +1,8 @@
-// NOTE(VI): Lý do: Bổ sung avatarUrl cho Member, ownerAvatarUrl cho Ledger và Operation members_update
-// Trước: Chỉ có tên, không lưu ảnh đại diện
-// Sau: Hỗ trợ lưu trữ avatar dạng URL hoặc Data URL
-// Test: Kiểm tra kiểu dữ liệu Member và Ledger có trường avatarUrl / ownerAvatarUrl
-export type Member = { id: string; name: string; sortOrder: number; active: boolean; avatarUrl?: string | null }
+// NOTE(VI): Lý do: Bổ sung avatarUrl và email cho Member, isOwner / currentUserEmail / currentMemberId cho Ledger, và kiểu LedgerListItem để quản lý nhiều sổ
+// Trước: Member chỉ có avatarUrl; Ledger chỉ có 1 sổ đơn lẻ gắn theo auth.uid()
+// Sau: Member có email để liên kết tài khoản bạn bè; Ledger có cờ isOwner; bổ sung LedgerListItem để chuyển đổi giữa các sổ
+// Test: Kiểm tra kiểu dữ liệu Member và Ledger
+export type Member = { id: string; name: string; sortOrder: number; active: boolean; avatarUrl?: string | null; email?: string | null }
 // NOTE(VI): Lý do: Hỗ trợ splitMode gồm 'equal', 'custom' (chia theo số tiền) và 'percent' (chia theo %)
 // Trước: splitMode chỉ là 'equal' | 'custom'
 // Sau: splitMode là 'equal' | 'custom' | 'percent'
@@ -17,14 +17,23 @@ export type Settlement = {
   id: string; fromMemberId: string; toMemberId: string; amount: number; date: string; note: string; periodId: string | null; updatedAt: string
 }
 export type SettlementPeriod = { id: string; startDate: string; endDate: string | null; status: 'open' | 'pending' | 'settled'; settledAt: string | null }
-export type Ledger = { id: string; name: string; ownerAvatarUrl?: string | null; members: Member[]; expenses: Expense[]; settlements: Settlement[]; periods: SettlementPeriod[] }
+export type Ledger = {
+  id: string; name: string; ownerAvatarUrl?: string | null;
+  members: Member[]; expenses: Expense[]; settlements: Settlement[]; periods: SettlementPeriod[];
+  isOwner?: boolean; currentUserEmail?: string; currentMemberId?: string | null
+}
+export type LedgerListItem = {
+  id: string; name: string; isOwner: boolean; ownerEmail?: string;
+  linkedMemberName?: string | null; linkedMemberId?: string | null; createdAt?: string
+  expenseCount?: number
+}
 export type Operation =
-  | { opId: string; kind: 'expense_upsert'; record: Expense; expectedUpdatedAt: string | null }
-  | { opId: string; kind: 'expense_delete'; recordId: string; expectedUpdatedAt: string }
-  | { opId: string; kind: 'settlement_upsert'; record: Settlement }
-  | { opId: string; kind: 'settlement_delete'; recordId: string }
-  | { opId: string; kind: 'members_update'; groupName: string; members: Member[]; ownerAvatarUrl?: string | null }
-  | { opId: string; kind: 'period_close'; periodId: string; endDate: string; nextPeriod: SettlementPeriod }
+  | { opId: string; kind: 'expense_upsert'; record: Expense; expectedUpdatedAt: string | null; groupId?: string }
+  | { opId: string; kind: 'expense_delete'; recordId: string; expectedUpdatedAt: string; groupId?: string }
+  | { opId: string; kind: 'settlement_upsert'; record: Settlement; groupId?: string }
+  | { opId: string; kind: 'settlement_delete'; recordId: string; groupId?: string }
+  | { opId: string; kind: 'members_update'; groupName: string; members: Member[]; ownerAvatarUrl?: string | null; groupId?: string }
+  | { opId: string; kind: 'period_close'; periodId: string; endDate: string; nextPeriod: SettlementPeriod; groupId?: string }
 
 export const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date())
 export const money = (value: number) => `${new Intl.NumberFormat('vi-VN').format(value)} ₫`
@@ -197,40 +206,53 @@ export function getUnpaidTotal(ledger: Ledger) {
 
 export function normalizeLedger(ledger: Ledger): Ledger {
   const raw = ledger as Ledger & { periods?: SettlementPeriod[] }
-  if (raw.periods?.length) return { ...ledger, periods: raw.periods.map((period) => period.status === 'pending'
-    ? { ...period, status: 'settled', settledAt: period.endDate ?? period.settledAt ?? today() }
-    : period) }
-  const startDate = ledger.expenses.map((expense) => expense.date).sort()[0] ?? today()
+  // NOTE(VI): Lý do: Lọc bỏ toàn bộ khoản chi mẫu demo (demo-1, demo-2, demo-3) và thanh toán mẫu nếu còn lưu trong cache/IndexedDB
+  // Trước: Nếu trình duyệt đã cache các khoản chi demo thì vẫn hiển thị 856.000đ, 2.208.000đ và các khoản chi ảo
+  // Sau: Tự động loại bỏ hoàn toàn các khoản chi có id bắt đầu bằng 'demo-' để hiển thị trống
+  // Test: Mở app -> không còn các khoản chi mẫu (Vé tàu, Ăn tối, Cà phê), hiển thị trống 0đ
+  const cleanedExpenses = (ledger.expenses || []).filter((e) => !e.id.startsWith('demo-'))
+  const cleanedSettlements = (ledger.settlements || []).filter((s) => !s.id.startsWith('demo-'))
+  const ledgerWithCleaned = { ...ledger, expenses: cleanedExpenses, settlements: cleanedSettlements }
+
+  if (raw.periods?.length) {
+    const updatedPeriods = raw.periods.map((period) => period.status === 'pending'
+      ? { ...period, status: 'settled' as const, settledAt: period.endDate ?? period.settledAt ?? today() }
+      : period)
+    return {
+      ...ledgerWithCleaned,
+      periods: updatedPeriods,
+      expenses: cleanedExpenses.map((expense) => ({ ...expense, periodId: expense.periodId ?? updatedPeriods[0].id })),
+      settlements: cleanedSettlements.map((settlement) => ({ ...settlement, periodId: settlement.periodId ?? updatedPeriods[0].id })),
+    }
+  }
+
+  const startDate = cleanedExpenses.map((expense) => expense.date).sort()[0] ?? today()
   // NOTE(VI): Lý do: Dùng makeId() (crypto.randomUUID()) thay vì 'legacy-period-...' để đảm bảo id luôn là UUID hợp lệ, không gây lỗi cú pháp UUID trong PostgreSQL khi sync lên Supabase.
   // Trước: const period: SettlementPeriod = { id: `legacy-period-${ledger.id}`, startDate, endDate: null, status: 'open', settledAt: null }
   // Sau: const period: SettlementPeriod = { id: makeId(), startDate, endDate: null, status: 'open', settledAt: null }
   // Test: Chốt kỳ hoặc sync kỳ lên Supabase không bị lỗi "invalid input syntax for type uuid"
   const period: SettlementPeriod = { id: makeId(), startDate, endDate: null, status: 'open', settledAt: null }
   return {
-    ...ledger,
+    ...ledgerWithCleaned,
     periods: [period],
-    expenses: ledger.expenses.map((expense) => ({ ...expense, periodId: expense.periodId ?? period.id })),
-    settlements: ledger.settlements.map((settlement) => ({ ...settlement, periodId: settlement.periodId ?? period.id })),
+    expenses: cleanedExpenses.map((expense) => ({ ...expense, periodId: expense.periodId ?? period.id })),
+    settlements: cleanedSettlements.map((settlement) => ({ ...settlement, periodId: settlement.periodId ?? period.id })),
   }
 }
 
 export function makeId() { return crypto.randomUUID() }
 
+// NOTE(VI): Lý do: Xóa bỏ toàn bộ dữ liệu mẫu (Vé tàu, Ăn tối, Cà phê...) theo yêu cầu người dùng
+// Trước: makeDemoLedger tạo sẵn 3 khoản chi mẫu (Vé tàu 1.280.000đ, Ăn tối 680.000đ, Cà phê 248.000đ)
+// Sau: makeDemoLedger trả về sổ trống hoàn toàn (expenses: [], settlements: []), hiển thị trống 0đ
+// Test: Mở app khi chưa có dữ liệu hoặc chưa tải được từ máy chủ -> Hiển thị trống 0đ, không có khoản chi ảo
 export function makeDemoLedger(): Ledger {
-  const period: SettlementPeriod = { id: 'local-period-1', startDate: today(), endDate: null, status: 'open', settledAt: null }
+  const period: SettlementPeriod = { id: makeId(), startDate: today(), endDate: null, status: 'open', settledAt: null }
   const members: Member[] = [
     { id: 'member-linh', name: 'Linh', sortOrder: 0, active: true },
     { id: 'member-minh', name: 'Minh', sortOrder: 1, active: true },
     { id: 'member-anh', name: 'Anh', sortOrder: 2, active: true },
     { id: 'member-huy', name: 'Huy', sortOrder: 3, active: true },
   ]
-  const expense = (id: string, title: string, amount: number, payerId: string, date: string, category: string): Expense => ({
-    id, title, amount, payerId, date, category, note: '', splitMode: 'equal',
-    splits: equalSplits(amount, members.map((m) => m.id)), periodId: period.id, updatedAt: new Date().toISOString(),
-  })
-  return { id: 'local-trip-ledger', name: 'Sổ chi tiêu nhóm mình', members, periods: [period], expenses: [
-    expense('demo-1', 'Vé tàu đi Đà Lạt', 1280000, 'member-linh', today(), 'Di chuyển'),
-    expense('demo-2', 'Ăn tối ngày đầu', 680000, 'member-minh', today(), 'Ăn uống'),
-    expense('demo-3', 'Cà phê và bánh ngọt', 248000, 'member-anh', today(), 'Ăn uống'),
-  ], settlements: [] }
+  return { id: 'local-trip-ledger', name: 'Sổ chi tiêu', members, periods: [period], expenses: [], settlements: [] }
 }

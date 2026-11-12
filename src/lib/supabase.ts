@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import type { Ledger, Operation } from '../domain'
+import type { Ledger, LedgerListItem, Operation } from '../domain'
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const publishableKey = (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY) as string | undefined
@@ -13,11 +13,34 @@ function formatSupabaseError(error: any, fallbackMessage: string): Error {
   return new Error(message)
 }
 
-export async function fetchCloudLedger(): Promise<Ledger> {
+// NOTE(VI): Lý do: Bổ sung groupId để tải sổ chi tiêu cụ thể (sổ của tôi hoặc sổ được mời) và fallback lấy từ localStorage
+// Trước: fetchCloudLedger() không nhận tham số, chỉ tải sổ của owner_user_id = auth.uid()
+// Sau: fetchCloudLedger(groupId?: string) truyền p_group_id lên RPC; nếu không truyền sẽ lấy từ localStorage (nếu có)
+// Test: Gọi fetchCloudLedger() với hoặc không có groupId -> Luôn giữ đúng sổ người dùng đang xem
+export async function fetchCloudLedger(groupId?: string): Promise<Ledger> {
   if (!supabase) throw new Error('Chưa cấu hình Supabase.')
-  const { data, error } = await supabase.rpc('get_ledger_snapshot')
+  let target = groupId
+  if (!target && typeof window !== 'undefined') {
+    try { target = localStorage.getItem('chia-tien-active-ledger-id') || undefined } catch {}
+  }
+  const params = target ? { p_group_id: target } : {}
+  const { data, error } = await supabase.rpc('get_ledger_snapshot', params)
   if (error) throw formatSupabaseError(error, 'Không thể tải sổ từ đám mây.')
   return data as Ledger
+}
+
+// NOTE(VI): Lý do: Lấy danh sách tất cả các sổ user có quyền truy cập (sổ tự tạo + sổ được mời)
+// Trước: Không có hàm này
+// Sau: Trả về mảng LedgerListItem gồm id, name, isOwner, ownerEmail, linkedMemberName
+// Test: Gọi fetchUserLedgers() -> Trả về danh sách sổ đầy đủ
+export async function fetchUserLedgers(): Promise<LedgerListItem[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.rpc('get_user_ledgers')
+  if (error) {
+    console.warn('Lỗi lấy danh sách sổ hoặc RPC chưa cập nhật:', error)
+    return []
+  }
+  return (data ?? []) as LedgerListItem[]
 }
 
 export async function fetchMonthlyExpenseTotals(): Promise<Record<string, number>> {
