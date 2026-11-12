@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Download, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
+  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Download, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, Share2, UserRound,
   Plus, ReceiptText, RefreshCw, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
   Wallet, X,
 } from 'lucide-react'
 import { toBlob } from 'html-to-image'
+import JSZip from 'jszip'
 import {
   equalSplits, getBalances, getMemberDebtBreakdown, getUnpaidTotal, makeDemoLedger, makeId, memberColor, money, normalizeLedger,
   markClosedPeriodsSettled, suggestSettlements, today, type Expense, type Ledger, type Member, type Operation, type Settlement, type SettlementPeriod,
@@ -970,7 +971,7 @@ export default function App() {
         onConfirm={closeCurrentPeriod}
       />
     )}
-    {showBillModal && <BillModal groupName={ledger.name} expenses={billData.expenses} members={ledger.members} subtitle={billData.subtitle} onClose={() => setShowBillModal(false)} showToast={showToast} />}
+    {showBillModal && <BillModal groupName={ledger.name} expenses={billData.expenses} members={ledger.members} subtitle={billData.subtitle} ledger={ledger} onClose={() => setShowBillModal(false)} showToast={showToast} />}
     {viewingExpense && (
       <ExpenseDetailModal
         expense={viewingExpense}
@@ -1079,6 +1080,7 @@ function BillModal({
   expenses,
   members,
   subtitle = 'Tổng hợp các khoản chi.',
+  ledger,
   onClose,
   showToast,
 }: {
@@ -1086,6 +1088,7 @@ function BillModal({
   expenses: Expense[]
   members: Member[]
   subtitle?: string
+  ledger?: Ledger
   onClose: () => void
   showToast?: (msg: string) => void
 }) {
@@ -1095,6 +1098,7 @@ function BillModal({
   const [downloadingChunks, setDownloadingChunks] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState('')
   const [downloadedChunks, setDownloadedChunks] = useState(false)
+  const [chunkModalFiles, setChunkModalFiles] = useState<{ name: string; blob: Blob; file: File; url: string }[] | null>(null)
   const receiptRef = useRef<HTMLDivElement>(null)
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([])
 
@@ -1145,6 +1149,39 @@ function BillModal({
       .sort((a, b) => b.share - a.share)
   }, [expenses, members])
 
+  // NOTE(VI): Lý do: Bổ sung gợi ý số tiền cần chuyển vào mục "SỐ TIỀN CẦN CHUYỂN" ngay trên bill theo yêu cầu người dùng
+  // Trước: Bill chỉ có danh sách chi tiêu và bảng chia tiền từng người ở cuối, không có gợi ý rõ người nào cần chuyển cho ai
+  // Sau: Tự động tính toán số tiền cần chuyển (Ai trả ai bao nhiêu) và đặt ngay trước mục Thông tin chuyển khoản ở đầu bill
+  // Test: Mở bill -> Thấy rõ mục "SỐ TIỀN CẦN CHUYỂN" (ví dụ: Kha trả Thương: 183.000 đ) ngay trên khung mã QR
+  const transferSuggestions = useMemo(() => {
+    const creditors = memberBreakdown
+      .map((m) => ({ memberId: m.id, name: m.name, amount: m.paid - m.share }))
+      .filter((x) => x.amount > 0)
+      .sort((a, b) => b.amount - a.amount)
+    const debtors = memberBreakdown
+      .map((m) => ({ memberId: m.id, name: m.name, amount: m.share - m.paid }))
+      .filter((x) => x.amount > 0)
+      .sort((a, b) => b.amount - a.amount)
+
+    const list: { fromName: string; toName: string; amount: number; note?: string }[] = []
+    let d = 0
+    let c = 0
+    const dList = debtors.map((x) => ({ ...x }))
+    const cList = creditors.map((x) => ({ ...x }))
+    while (d < dList.length && c < cList.length) {
+      const amount = Math.min(dList[d].amount, cList[c].amount)
+      if (amount > 0) {
+        const breakdown = ledger ? getMemberDebtBreakdown(ledger, dList[d].memberId) : { note: '' }
+        list.push({ fromName: dList[d].name, toName: cList[c].name, amount, note: breakdown.note ?? undefined })
+      }
+      dList[d].amount -= amount
+      cList[c].amount -= amount
+      if (dList[d].amount <= 0) d++
+      if (cList[c].amount <= 0) c++
+    }
+    return list
+  }, [memberBreakdown, ledger])
+
   const billText = useMemo(() => {
     return [
       `----------------------------------------`,
@@ -1152,8 +1189,16 @@ function BillModal({
       `----------------------------------------`,
       ...(subtitle ? [`Kỳ: ${subtitle}`] : []),
       `Ngày lập : ${formatDate(today())}`,
-      `Số lượng : ${expenses.length} khoản chi`,
-      `TỔNG CỘNG: ${money(total)}`,
+      `----------------------------------------`,
+      `SỐ TIỀN CẦN CHUYỂN:`,
+      ...(transferSuggestions.length
+        ? transferSuggestions.map((s) => `• ${s.fromName} trả ${s.toName}: ${money(s.amount)}${s.note ? ` (${s.note})` : ''}`)
+        : [`• Đã cân bằng số dư (0 đ)`]),
+      `----------------------------------------`,
+      `THÔNG TIN CHUYỂN KHOẢN:`,
+      `Ngân hàng : TECHCOMBANK`,
+      `Chủ TK    : LE THI LY THUONG`,
+      `Số TK     : 1903 8123 1750 16`,
       `----------------------------------------`,
       `DANH SÁCH KHOẢN CHI:`,
       ...dateGroups.flatMap((group) => [
@@ -1177,16 +1222,14 @@ function BillModal({
         }),
       ]),
       `----------------------------------------`,
+      `Số lượng : ${expenses.length} khoản chi`,
+      `TỔNG CỘNG: ${money(total)}`,
+      `----------------------------------------`,
       `PHẦN PHẢI CHI TRẢ TỪNG NGƯỜI:`,
       ...memberBreakdown.map((m) => `• ${m.name}: ${money(m.share)}${m.paid > 0 ? ` (Đã chi trước: ${money(m.paid)})` : ''}`),
       `----------------------------------------`,
-      `THÔNG TIN CHUYỂN KHOẢN:`,
-      `Ngân hàng : TECHCOMBANK`,
-      `Chủ TK    : LE THI LY THUONG`,
-      `Số TK     : 1903 8123 1750 16`,
-      `----------------------------------------`,
     ].join('\n')
-  }, [subtitle, expenses, total, dateGroups, memberBreakdown])
+  }, [subtitle, expenses, total, dateGroups, memberBreakdown, transferSuggestions])
 
   async function prepareReceiptRenderOptions(node: HTMLElement) {
     const imgs = Array.from(node.querySelectorAll('img'))
@@ -1294,20 +1337,23 @@ function BillModal({
     window.setTimeout(() => setCopiedText(false), 2200)
   }
 
-  // NOTE(VI): Lý do: Bổ sung chức năng tải ảnh bill cắt gọn (mỗi ảnh 10 hóa đơn) theo yêu cầu người dùng
-  // Trước: Chỉ có nút Sao chép ảnh nguyên bill dài, nếu bill 45 khoản thì rất dài và khó đọc trên mobile
-  // Sau: Thêm nút màu trắng "Tải ảnh cắt gọn" cùng hàng với các nút hiện tại. Tự động xuất từng ảnh 10 khoản:
-  //      - Bill 1: Tiêu đề + 10 khoản đầu
-  //      - Bill 2..n-1: Tiêu đề + 10 khoản tiếp theo (đúng số thứ tự 11-20...)
-  //      - Bill cuối: Các khoản còn lại + Tổng tiền + Bảng chia từng người + Mã QR chuyển khoản
-  // Test: Bấm "Tải ảnh cắt gọn" -> Tải lần lượt từng file PNG về máy, ảnh sắc nét và đọc rõ ràng trên nhóm chat
+  // NOTE(VI): Lý do: Khắc phục triệt để lỗi trên iPhone (iOS Safari) chỉ tải được 1 ảnh và văng ra màn hình đen AnyDesk/QuickLook
+  // Trước: Dùng thẻ <a> download cho từng blob URL trong vòng lặp -> iOS Safari điều hướng trang sang trình xem tệp của file 1 và dừng script, 4 file còn lại bị hủy
+  // Sau:
+  //   1. Tích hợp navigator.share: Tự động mở bảng chia sẻ iOS với đủ 5 ảnh -> người dùng bấm "Lưu 5 hình ảnh" hoặc gửi thẳng Zalo
+  //   2. Tích hợp JSZip: Nén trọn bộ thành 1 file ZIP (bill-tron-bo-5-anh.zip) tải 1 chạm cho cả iPhone (vào Tệp) và máy tính PC
+  //   3. Hiển thị modal xem trước và tải từng ảnh/tải ZIP tiện lợi
+  // Test: Trên iPhone mở Safari/Vercel -> Bấm "Tải ảnh cắt gọn" -> Mở ngay bảng chia sẻ iOS chứa cả 5 ảnh, bấm "Lưu 5 hình ảnh" lưu đủ vào Album ảnh máy
   async function downloadChunkedImages() {
     if (!expenses.length || !expenseChunks.length) return
     setDownloadingChunks(true)
     try {
       const total = expenseChunks.length
+      const generatedFiles: { name: string; blob: Blob; file: File; url: string }[] = []
+      const dateStr = today().replace(/-/g, '')
+
       for (let i = 0; i < total; i++) {
-        setDownloadProgress(`Đang tải (${i + 1}/${total})...`)
+        setDownloadProgress(`Đang tạo (${i + 1}/${total})...`)
         const node = chunkRefs.current[i]
         if (!node) continue
 
@@ -1315,29 +1361,85 @@ function BillModal({
         const blob = await toBlob(node, options)
         if (!blob) throw new Error(`Không tạo được ảnh phần ${i + 1}`)
 
-        const dateStr = today().replace(/-/g, '')
         const filename = total > 1
           ? `bill-${dateStr}-phan-${i + 1}-cua-${total}.png`
           : `bill-${dateStr}.png`
 
+        const file = new File([blob], filename, { type: 'image/png' })
         const url = URL.createObjectURL(blob)
+        generatedFiles.push({ name: filename, blob, file, url })
+      }
+
+      if (total === 1) {
+        const single = generatedFiles[0]
+        if (typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [single.file] })) {
+          try {
+            await navigator.share({
+              files: [single.file],
+              title: 'Phiếu thanh toán',
+            })
+            setDownloadedChunks(true)
+            showToast?.('Đã mở bảng lưu / chia sẻ ảnh bill!')
+            return
+          } catch (e: unknown) {
+            if (e instanceof Error && e.name === 'AbortError') return
+          }
+        }
         const a = document.createElement('a')
-        a.href = url
-        a.download = filename
+        a.href = single.url
+        a.download = single.name
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
-        setTimeout(() => URL.revokeObjectURL(url), 12000)
+        setDownloadedChunks(true)
+        showToast?.('Đã tải về ảnh bill!')
+        return
+      }
 
-        if (i < total - 1) {
-          await new Promise((r) => setTimeout(r, 600))
+      const filesToShare = generatedFiles.map((f) => f.file)
+
+      // Trên thiết bị hỗ trợ navigator.share (iPhone, iPad, Android): Mở bảng chia sẻ hệ thống với trọn bộ ảnh
+      if (typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: filesToShare })) {
+        try {
+          await navigator.share({
+            files: filesToShare,
+            title: `Phiếu thanh toán (${total} ảnh)`,
+            text: subtitle || 'Phiếu thanh toán chi tiêu',
+          })
+          setDownloadedChunks(true)
+          showToast?.(`Đã mở bảng lưu / gửi cả ${total} ảnh bill!`)
+          setChunkModalFiles(generatedFiles)
+          return
+        } catch (err: unknown) {
+          if (err instanceof Error && err.name === 'AbortError') {
+            setChunkModalFiles(generatedFiles)
+            return
+          }
         }
       }
+
+      // Trình duyệt không hỗ trợ share nhiều file (PC hoặc trình duyệt khác): Tự động nén ZIP và tải về
+      setDownloadProgress('Đang nén file ZIP...')
+      const zip = new JSZip()
+      for (const item of generatedFiles) {
+        zip.file(item.name, item.blob)
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob' })
+      const zipFilename = `bill-${dateStr}-tron-bo-${total}-anh.zip`
+      const zipUrl = URL.createObjectURL(zipBlob)
+      const a = document.createElement('a')
+      a.href = zipUrl
+      a.download = zipFilename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(zipUrl), 15000)
+
       setDownloadedChunks(true)
-      showToast?.(total > 1 ? `Đã tải về ${total} ảnh bill cắt gọn!` : 'Đã tải về ảnh bill!')
-      window.setTimeout(() => setDownloadedChunks(false), 2500)
+      showToast?.(`Đã tải về file ZIP trọn bộ ${total} ảnh!`)
+      setChunkModalFiles(generatedFiles)
     } catch (err) {
-      console.error('Lỗi khi tải ảnh cắt gọn:', err)
+      console.error('Lỗi khi xuất ảnh cắt gọn:', err)
       showToast?.('Không thể xuất ảnh cắt gọn, vui lòng thử lại.')
     } finally {
       setDownloadingChunks(false)
@@ -1354,6 +1456,53 @@ function BillModal({
             <div className="receipt-doc-name">PHIẾU THANH TOÁN</div>
             {subtitle && <div className="receipt-subtitle">{subtitle}</div>}
             <div className="receipt-meta">Ngày tính: {formatDate(today())}</div>
+          </div>
+
+          <div className="receipt-divider" />
+
+          {/* NOTE(VI): Lý do: Thêm mục SỐ TIỀN CẦN CHUYỂN và đưa THÔNG TIN CHUYỂN KHOẢN lên đầu bill theo yêu cầu người dùng
+              Trước: Thông tin chuyển khoản nằm ở cuối bill; không có mục gợi ý số tiền cần chuyển ở đầu bill
+              Sau: Đưa Số tiền cần chuyển và Thông tin chuyển khoản (kèm QR) lên ngay sau Ngày tính và trước Danh sách khoản chi
+              Test: Mở bill -> Thấy ngay Số tiền cần chuyển (ai trả ai bao nhiêu) và Khung QR chuyển khoản ở phía trên */}
+          <div className="receipt-section-title">SỐ TIỀN CẦN CHUYỂN</div>
+          {transferSuggestions.length > 0 ? (
+            <div className="receipt-transfer-list">
+              {transferSuggestions.map((s, idx) => (
+                <div key={idx} className="receipt-transfer-row">
+                  <span className="receipt-transfer-names">
+                    • <b>{s.fromName}</b> trả <b>{s.toName}</b>:
+                    {s.note && <small className="receipt-transfer-note">{s.note}</small>}
+                  </span>
+                  <strong className="receipt-transfer-amount">{money(s.amount)}</strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="receipt-transfer-empty">Đã cân bằng số dư (0 đ)</div>
+          )}
+
+          <div className="receipt-divider light" />
+
+          {/* Mục chuyển khoản & Mã VietQR của LE THI LY THUONG - Đưa lên đầu bill */}
+          <div className="receipt-payment-section">
+            <div className="receipt-section-title">THÔNG TIN CHUYỂN KHOẢN</div>
+            <div className="receipt-bank-card">
+              <div>Ngân hàng: <b>TECHCOMBANK</b></div>
+              <div>Chủ tài khoản: <b>LE THI LY THUONG</b></div>
+              <div>Số tài khoản: <b className="receipt-account-number">1903 8123 1750 16</b></div>
+            </div>
+
+            <div className="receipt-qr-wrap">
+              <img
+                src="/qr-payment.jpg"
+                alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
+                className="receipt-qr-code"
+                crossOrigin="anonymous"
+              />
+              <div className="receipt-qr-hint">
+                Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
+              </div>
+            </div>
           </div>
 
           <div className="receipt-divider" />
@@ -1452,30 +1601,6 @@ function BillModal({
               </div>
             ))}
           </div>
-
-          <div className="receipt-divider double" />
-
-          {/* Mục chuyển khoản & Mã VietQR của LE THI LY THUONG */}
-          <div className="receipt-payment-section">
-            <div className="receipt-section-title">THÔNG TIN CHUYỂN KHOẢN</div>
-            <div className="receipt-bank-card">
-              <div>Ngân hàng: <b>TECHCOMBANK</b></div>
-              <div>Chủ tài khoản: <b>LE THI LY THUONG</b></div>
-              <div>Số tài khoản: <b className="receipt-account-number">1903 8123 1750 16</b></div>
-            </div>
-
-            <div className="receipt-qr-wrap">
-              <img
-                src="/qr-payment.jpg"
-                alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
-                className="receipt-qr-code"
-                crossOrigin="anonymous"
-              />
-              <div className="receipt-qr-hint">
-                Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
-              </div>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -1572,26 +1697,75 @@ function BillModal({
               ref={(el) => { chunkRefs.current[cIdx] = el }}
               className="thermal-receipt-paper bill-printable bill-chunk-paper"
             >
-              {/* Header */}
-              <div className="receipt-header">
-                <div className="receipt-doc-name">PHIẾU THANH TOÁN</div>
-                {expenseChunks.length > 1 && (
-                  <div className="receipt-chunk-badge">
-                    PHẦN {cIdx + 1}/{expenseChunks.length} (Khoản {String(startIdx + 1).padStart(2, '0')} - {String(endIdx).padStart(2, '0')})
+              {/* NOTE(VI): Lý do: Bỏ 3 dòng đầu thông tin phiếu từ tờ thứ 2 đến tờ cuối theo yêu cầu người dùng
+                  Trước: Mọi tờ từ 1 đến cuối đều lặp lại PHIẾU THANH TOÁN, PHẦN X/Y, và Kỳ vừa chốt sổ
+                  Sau: Chỉ tờ 1 (isFirst) mới hiển thị Header, Số tiền cần chuyển và Thông tin chuyển khoản; từ tờ thứ 2 trở đi bắt đầu thẳng vào DANH SÁCH KHOẢN CHI
+                  Test: Bấm Tải ảnh cắt gọn -> Mở ảnh phần 2, phần 3... -> Thấy không còn 3 dòng đầu, bắt đầu ngay từ danh sách khoản chi */}
+              {isFirst && (
+                <>
+                  <div className="receipt-header">
+                    <div className="receipt-doc-name">PHIẾU THANH TOÁN</div>
+                    {expenseChunks.length > 1 && (
+                      <div className="receipt-chunk-badge">
+                        PHẦN 1/{expenseChunks.length} (Khoản 01 - {String(endIdx).padStart(2, '0')})
+                      </div>
+                    )}
+                    {subtitle && (
+                      <div className="receipt-subtitle">{subtitle}</div>
+                    )}
+                    <div className="receipt-meta">Ngày tính: {formatDate(today())}</div>
                   </div>
-                )}
-                {subtitle && (
-                  <div className="receipt-subtitle">{subtitle}</div>
-                )}
-                {isFirst && (
-                  <div className="receipt-meta">Ngày tính: {formatDate(today())}</div>
-                )}
-              </div>
 
-              <div className="receipt-divider" />
+                  <div className="receipt-divider" />
 
-              {/* Danh sách khoản chi */}
-              <div className="receipt-section-title">
+                  {/* Mục số tiền cần chuyển (trước thông tin chuyển khoản) */}
+                  <div className="receipt-section-title">SỐ TIỀN CẦN CHUYỂN</div>
+                  {transferSuggestions.length > 0 ? (
+                    <div className="receipt-transfer-list">
+                      {transferSuggestions.map((s, idx) => (
+                        <div key={idx} className="receipt-transfer-row">
+                          <span className="receipt-transfer-names">
+                            • <b>{s.fromName}</b> trả <b>{s.toName}</b>:
+                            {s.note && <small className="receipt-transfer-note">{s.note}</small>}
+                          </span>
+                          <strong className="receipt-transfer-amount">{money(s.amount)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="receipt-transfer-empty">Đã cân bằng số dư (0 đ)</div>
+                  )}
+
+                  <div className="receipt-divider light" />
+
+                  {/* Thông tin chuyển khoản & Mã QR (đưa lên đầu bill sau ngày tính) */}
+                  <div className="receipt-payment-section">
+                    <div className="receipt-section-title">THÔNG TIN CHUYỂN KHOẢN</div>
+                    <div className="receipt-bank-card">
+                      <div>Ngân hàng: <b>TECHCOMBANK</b></div>
+                      <div>Chủ tài khoản: <b>LE THI LY THUONG</b></div>
+                      <div>Số tài khoản: <b className="receipt-account-number">1903 8123 1750 16</b></div>
+                    </div>
+
+                    <div className="receipt-qr-wrap">
+                      <img
+                        src="/qr-payment.jpg"
+                        alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
+                        className="receipt-qr-code"
+                        crossOrigin="anonymous"
+                      />
+                      <div className="receipt-qr-hint">
+                        Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="receipt-divider" />
+                </>
+              )}
+
+              {/* Danh sách khoản chi - Tờ thứ 2 đến cuối bắt đầu ngay tại đây */}
+              <div className="receipt-section-title" style={!isFirst ? { marginTop: 0 } : undefined}>
                 DANH SÁCH KHOẢN CHI {expenseChunks.length > 1 ? `(${startIdx + 1} - ${endIdx})` : ''}
               </div>
               <div className="receipt-table-header">
@@ -1662,7 +1836,7 @@ function BillModal({
                 </>
               )}
 
-              {/* Trang cuối: Tổng kết tiền + Phần chia từng người + Chuyển khoản QR */}
+              {/* Trang cuối: Tổng kết tiền + Phần chia từng người */}
               {isLast && (
                 <>
                   <div className="receipt-divider double" />
@@ -1694,35 +1868,141 @@ function BillModal({
                       </div>
                     ))}
                   </div>
-
-                  <div className="receipt-divider double" />
-
-                  {/* Mục chuyển khoản & Mã VietQR của LE THI LY THUONG */}
-                  <div className="receipt-payment-section">
-                    <div className="receipt-section-title">THÔNG TIN CHUYỂN KHOẢN</div>
-                    <div className="receipt-bank-card">
-                      <div>Ngân hàng: <b>TECHCOMBANK</b></div>
-                      <div>Chủ tài khoản: <b>LE THI LY THUONG</b></div>
-                      <div>Số tài khoản: <b className="receipt-account-number">1903 8123 1750 16</b></div>
-                    </div>
-
-                    <div className="receipt-qr-wrap">
-                      <img
-                        src="/qr-payment.jpg"
-                        alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
-                        className="receipt-qr-code"
-                        crossOrigin="anonymous"
-                      />
-                      <div className="receipt-qr-hint">
-                        Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
-                      </div>
-                    </div>
-                  </div>
                 </>
               )}
             </div>
           )
         })}
+      </div>
+
+      {chunkModalFiles && (
+        <ChunkResultModal
+          files={chunkModalFiles}
+          onClose={() => setChunkModalFiles(null)}
+          showToast={showToast}
+        />
+      )}
+    </Modal>
+  )
+}
+
+// NOTE(VI): Lý do: Bổ sung Modal hiển thị và quản lý trọn bộ ảnh bill cắt gọn hỗ trợ hoàn hảo trên iPhone (iOS Safari)
+// Trước: Dùng lệnh <a> download từng ảnh -> iOS Safari chỉ tải ảnh 1 và mở màn hình đen AnyDesk, chặn đứng 4 ảnh sau
+// Sau:
+//   - Tự động dùng navigator.share để mở bảng chia sẻ gốc của iOS: Người dùng bấm "Lưu 5 hình ảnh" hoặc chọn Zalo gửi luôn cả 5 ảnh
+//   - Có nút "Tải file ZIP trọn bộ" nén sẵn qua JSZip cho người muốn lưu về Tệp hoặc tải trên PC
+//   - Có ảnh xem trước từng phần kèm nút tải riêng lẻ
+// Test: Bấm "Tải ảnh cắt gọn" trên iPhone -> Bảng chia sẻ iOS mở ra với đủ 5 ảnh, bấm "Lưu 5 hình ảnh" lưu đủ vào Album ảnh máy
+function ChunkResultModal({
+  files,
+  onClose,
+  showToast,
+}: {
+  files: { name: string; blob: Blob; file: File; url: string }[]
+  onClose: () => void
+  showToast?: (msg: string) => void
+}) {
+  const [zipping, setZipping] = useState(false)
+
+  async function shareAll() {
+    if (typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: files.map((f) => f.file) })) {
+      try {
+        await navigator.share({
+          files: files.map((f) => f.file),
+          title: `Phiếu thanh toán (${files.length} ảnh)`,
+        })
+      } catch (e: unknown) {
+        if (e instanceof Error && e.name !== 'AbortError') {
+          showToast?.('Không thể mở bảng chia sẻ')
+        }
+      }
+    } else {
+      showToast?.('Thiết bị không hỗ trợ chia sẻ nhiều ảnh, vui lòng bấm Tải file ZIP.')
+    }
+  }
+
+  async function downloadZip() {
+    setZipping(true)
+    try {
+      const zip = new JSZip()
+      for (const f of files) {
+        zip.file(f.name, f.blob)
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob' })
+      const dateStr = today().replace(/-/g, '')
+      const zipFilename = `bill-${dateStr}-tron-bo-${files.length}-anh.zip`
+      const url = URL.createObjectURL(zipBlob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = zipFilename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(url), 15000)
+      showToast?.(`Đã tải về file ZIP (${files.length} ảnh)!`)
+    } catch (err) {
+      console.error(err)
+      showToast?.('Lỗi khi nén file ZIP')
+    } finally {
+      setZipping(false)
+    }
+  }
+
+  return (
+    <Modal
+      centered
+      eyebrow="XUẤT ẢNH THÀNH CÔNG"
+      title={`Bộ ảnh bill (${files.length} ảnh)`}
+      subtitle="Đã chia nhỏ 10 khoản/ảnh để gửi nhóm chat xem rõ nét"
+      onClose={onClose}
+    >
+      <div className="chunk-result-content">
+        <div className="chunk-result-actions">
+          {typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: files.map((f) => f.file) }) && (
+            <button
+              type="button"
+              className="button primary full"
+              onClick={() => void shareAll()}
+              style={{ background: 'var(--green)', color: '#fff', height: '42px', fontSize: '13px', fontWeight: 700 }}
+            >
+              <Share2 size={16} /> Lưu vào Thư viện ảnh / Gửi Zalo (Cả {files.length} ảnh)
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="button secondary full"
+            disabled={zipping}
+            onClick={() => void downloadZip()}
+            style={{ height: '40px', fontSize: '12.5px', fontWeight: 600 }}
+          >
+            <Download size={15} /> {zipping ? 'Đang nén...' : `Tải file ZIP trọn bộ (${files.length} ảnh)`}
+          </button>
+        </div>
+
+        <div className="chunk-result-grid">
+          {files.map((f, idx) => (
+            <div key={idx} className="chunk-result-card">
+              <div className="chunk-result-header">
+                <strong>Phần {idx + 1}/{files.length}</strong>
+                <a
+                  href={f.url}
+                  download={f.name}
+                  className="chunk-download-link"
+                  title="Tải ảnh này về máy"
+                >
+                  <Download size={13} /> Tải ảnh
+                </a>
+              </div>
+              <img src={f.url} alt={f.name} className="chunk-result-preview-img" />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="modal-actions" style={{ marginTop: '12px' }}>
+        <button type="button" className="button secondary full" onClick={onClose}>
+          Đóng
+        </button>
       </div>
     </Modal>
   )
