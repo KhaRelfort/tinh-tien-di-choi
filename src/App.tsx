@@ -205,9 +205,21 @@ export default function App() {
     try { return localStorage.getItem('chia-tien-active-ledger-id') } catch { return null }
   })
 
+  // NOTE(VI): Lý do: Đảm bảo fetchMonthlyExpenseTotals không set object rỗng {} ghi đè làm mất biểu đồ
+  // Trước: try { setCachedMonthlyTotals(await fetchMonthlyExpenseTotals()) } -> Supabase trả về {} khiến toàn bộ tháng thành 0
+  // Sau: Chỉ cập nhật cachedMonthlyTotals khi có dữ liệu thật (Object.keys(totals).length > 0), nếu rỗng thì đặt null để fallback về computedMonthlyTotals
+  // Test: F5 tải lại trang -> Biểu đồ giữ nguyên, không bị biến mất
   const refreshMonthlyTotals = useCallback(async () => {
-    try { setCachedMonthlyTotals(await fetchMonthlyExpenseTotals()) }
-    catch { setCachedMonthlyTotals(null) }
+    try {
+      const totals = await fetchMonthlyExpenseTotals()
+      if (totals && Object.keys(totals).length > 0) {
+        setCachedMonthlyTotals(totals)
+      } else {
+        setCachedMonthlyTotals(null)
+      }
+    } catch {
+      setCachedMonthlyTotals(null)
+    }
   }, [])
 
   const flashSavedStatus = useCallback(() => {
@@ -574,16 +586,21 @@ export default function App() {
   const visibleSettlements = displaySettlements.slice((safeSettlementPage - 1) * 15, safeSettlementPage * 15)
   const thisMonth = ledger.expenses.filter((expense) => expense.date.slice(0, 7) === today().slice(0, 7)).reduce((sum, expense) => sum + expense.amount, 0)
   const [currentYear, currentMonth] = today().split('-').map(Number)
+  // NOTE(VI): Lý do: Biểu đồ chi tiêu 6 tháng ưu tiên tính trực tiếp từ computedMonthlyTotals (khoản chi của sổ đang mở), tránh tình trạng hiện lên 1 chút rồi tự mất khi Supabase trả về view rỗng
+  // Trước: total: (cachedMonthlyTotals ?? computedMonthlyTotals)[key] ?? 0 -> khi cachedMonthlyTotals là {} thì ?? không fallback, dẫn đến total = 0 và biểu đồ xẹp xuống 2px
+  // Sau: total: computedMonthlyTotals[key] ?? (cachedMonthlyTotals?.[key] ?? 0) -> luôn hiển thị chính xác theo sổ đang mở và khớp 100% với số tiền "Chi tiêu tháng này"
+  // Test: Mở app hoặc F5 -> Biểu đồ chi tiêu tháng này giữ nguyên cột cao đẹp, không bị chớp rồi mất
   const monthlyExpenseTotals = Array.from({ length: 6 }, (_, index) => {
     const monthDate = new Date(Date.UTC(currentYear, currentMonth - 1 - (5 - index), 1))
     const year = monthDate.getUTCFullYear()
     const month = monthDate.getUTCMonth() + 1
     const key = `${year}-${String(month).padStart(2, '0')}`
+    const total = computedMonthlyTotals[key] ?? (cachedMonthlyTotals?.[key] ?? 0)
     return {
       key,
       label: `T${month}`,
       title: new Intl.DateTimeFormat('vi-VN', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(monthDate),
-      total: (cachedMonthlyTotals ?? computedMonthlyTotals)[key] ?? 0,
+      total,
       isCurrent: index === 5,
     }
   })
@@ -1168,6 +1185,19 @@ export default function App() {
       }}
       onUpdateOwnerAvatar={async (avatarUrl) => {
         await updateMembers(ledger.members, ledger.name, avatarUrl)
+      }}
+      onCreatePersonalLedger={async (name, memberNames) => {
+        const created = normalizeLedger(await initializeCloudLedger(name, memberNames))
+        setLedger(created)
+        await writeLedger(created)
+        await refreshMonthlyTotals()
+        try {
+          localStorage.setItem('chia-tien-active-ledger-id', created.id)
+          setActiveLedgerId(created.id)
+          const list = await fetchUserLedgers()
+          setUserLedgers(list)
+        } catch {}
+        showToast('Đã tạo sổ chi tiêu cá nhân thành công!')
       }}
       onLogout={() => {
         try { localStorage.removeItem('chia-tien-offline-email') } catch {}
@@ -2198,10 +2228,19 @@ function ExpenseList({
         const locked = period?.status !== 'open'
         return <div className={`expense-row ${locked ? 'expense-row-settled' : ''}`} key={expense.id}>
           <span className="expense-icon"><Icon size={17} /></span>
+          {/* NOTE(VI): Lý do: Con dấu ĐÃ CHỐT SỔ hiển thị dạng đóng dấu nổi đè lên nội dung bill (overlay), cho phép nội dung bill (ngày, người trả, tên khoản chi) hiển thị trọn vẹn bên dưới như con dấu đóng ngoài giấy, không bị ép co ngắn hay cắt chữ thành dấu ba chấm
+              Trước: Con dấu nằm inline trong expense-meta chiếm chiều ngang, ép tên người trả bị cắt ngắn thành "...ng đã ..."
+              Sau: Con dấu đóng đè lên (absolute overlay) nghiêng -8deg, chữ và ngày bên dưới hiển thị trọn vẹn
+              Test: Xem lịch sử chi tiêu mục đã chốt -> Chữ "Thương đã trả" hiển thị đầy đủ; con dấu ĐÃ CHỐT SỔ đóng nổi màu đỏ thanh lịch như đóng trên giấy */}
           <div className="expense-detail">
             <strong>{expense.title}</strong>
-            <div className="expense-meta"><span>{formatDate(expense.date)} <i /> {payer?.name ?? 'Thành viên đã ngừng hoạt động'} đã trả</span>{period && period.status !== 'open' && <span className="paid-stamp"><strong style={{ color: '#c32026', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "DM Sans", sans-serif', fontWeight: 500, letterSpacing: '0.4px' }}>ĐÃ CHỐT SỔ</strong></span>}</div>
+            <div className="expense-meta"><span>{formatDate(expense.date)} <i /> {payer?.name ?? 'Thành viên đã ngừng hoạt động'} đã trả</span></div>
             {period && period.status !== 'open' && <small className="settlement-date">Chốt sổ: {formatDate(period.endDate ?? period.settledAt ?? period.startDate)}</small>}
+            {period && period.status !== 'open' && (
+              <span className="paid-stamp" aria-hidden="true">
+                <strong style={{ color: '#c32026', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "DM Sans", sans-serif', fontWeight: 500, letterSpacing: '0.4px' }}>ĐÃ CHỐT SỔ</strong>
+              </span>
+            )}
           </div>
           <span className="expense-split-count">{expense.splits.length} người</span>
           <strong className="expense-amount">{money(expense.amount)}</strong>
@@ -2662,6 +2701,7 @@ function AccountModal({
   onUpdateMemberAvatar,
   onUpdateOwnerAvatar,
   onSwitchLedger,
+  onCreatePersonalLedger,
   onLogout,
 }: {
   email: string
@@ -2680,9 +2720,14 @@ function AccountModal({
   onUpdateMemberAvatar: (memberId: string, avatarUrl: string | null) => Promise<void>
   onUpdateOwnerAvatar: (avatarUrl: string | null) => Promise<void>
   onSwitchLedger: (ledgerId: string) => Promise<void>
+  onCreatePersonalLedger?: (name: string, memberNames: string[]) => Promise<void>
   onLogout: () => void
 }) {
   const activeMembers = members.filter((member) => member.active)
+  const hasOwnedLedger = userLedgers.some((l) => l.isOwner)
+  const [showCreatePersonalForm, setShowCreatePersonalForm] = useState(false)
+  const [creatingPersonal, setCreatingPersonal] = useState(false)
+  const [createPersonalError, setCreatePersonalError] = useState('')
   const [editingLedgerId, setEditingLedgerId] = useState<string | null>(focusRename ? (activeLedgerId || 'current') : null)
   const [tempGroupName, setTempGroupName] = useState(groupName)
   const [savingGroupName, setSavingGroupName] = useState(false)
@@ -2875,133 +2920,127 @@ function AccountModal({
       </div>
       <div><span>Email đăng nhập</span><strong>{email || (cloudEnabled ? 'Chưa đăng nhập' : 'Không dùng tài khoản')}</strong></div>
     </div>
-    <section className="account-group-info">
-      <div className="account-group-heading"><span>Thông tin nhóm</span></div>
-      {/* NOTE(VI): Lý do: Bấm vào avatar của thành viên để đổi ảnh đại diện trực tiếp
-          Trước: Avatar chỉ là chữ cái viết tắt
-          Sau: Click vào avatar circle mở chọn ảnh từ máy; click vào phần tên mở đổi tên
-          Test: Bấm vào hình tròn avatar của thành viên bất kỳ -> chọn ảnh -> avatar thành viên đổi ngay */}
-      {/* NOTE(VI): Lý do: Bình thường không hiện camera, click avatar phóng to; click tên hiện đổi tên và icon camera
-          Trước: Mọi avatar đều có icon camera cố định và click avatar thì đổi ảnh
-          Sau: Bình thường click avatar mở lightbox xem to. Click tên mở chế độ đổi tên, trong chế độ này avatar hiện icon camera và click vào thì đổi ảnh
-          Test: Bấm avatar thành viên xem ảnh to; bấm tên vào form sửa tên và thấy icon máy ảnh xuất hiện */}
-      <div className="account-group-members">
-        {activeMembers.map((member, index) => {
-          const isEditing = editingMember?.id === member.id
-          return (
-            <div
-              key={member.id}
-              className={`account-group-member ${isEditing ? 'active' : ''}`}
-            >
-              <span
-                className={`member-avatar-click-zone ${isEditing ? 'is-editing' : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (isEditing) {
-                    targetMemberIdRef.current = member.id
-                    memberFileInputRef.current?.click()
-                  } else {
-                    setPreviewAvatar({
-                      url: member.avatarUrl,
-                      name: member.name,
-                      color: memberColor(index),
-                      initial: (member.name.trim().charAt(0) || '?').toUpperCase(),
-                    })
-                  }
-                }}
-                title={isEditing ? 'Bấm vào avatar để đổi ảnh đại diện' : 'Bấm để xem ảnh phóng to'}
+    {/* NOTE(VI): Lý do: Ẩn phần Thông tin nhóm nếu chưa tạo sổ cá nhân hoặc đang xem sổ được mời theo yêu cầu người dùng
+        Trước: Luôn hiển thị Thông tin nhóm (kể cả nhóm của sổ được mời)
+        Sau: Chỉ hiển thị Thông tin nhóm khi tài khoản đã tạo sổ cá nhân và đang mở sổ cá nhân (hasOwnedLedger && isOwner)
+        Test: Tài khoản được mời chưa tạo sổ -> Mở Tài khoản -> Ẩn hoàn toàn khối Thông tin nhóm */}
+    {hasOwnedLedger && isOwner && (
+      <section className="account-group-info">
+        <div className="account-group-heading"><span>Thông tin nhóm</span></div>
+        <div className="account-group-members">
+          {activeMembers.map((member, index) => {
+            const isEditing = editingMember?.id === member.id
+            return (
+              <div
+                key={member.id}
+                className={`account-group-member ${isEditing ? 'active' : ''}`}
               >
-                <MemberAvatar member={member} index={index} className="tiny" />
-                {isEditing && (
-                  <span className="avatar-cam-badge">
-                    <Camera size={9} />
+                <span
+                  className={`member-avatar-click-zone ${isEditing ? 'is-editing' : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (isEditing) {
+                      targetMemberIdRef.current = member.id
+                      memberFileInputRef.current?.click()
+                    } else {
+                      setPreviewAvatar({
+                        url: member.avatarUrl,
+                        name: member.name,
+                        color: memberColor(index),
+                        initial: (member.name.trim().charAt(0) || '?').toUpperCase(),
+                      })
+                    }
+                  }}
+                  title={isEditing ? 'Bấm vào avatar để đổi ảnh đại diện' : 'Bấm để xem ảnh phóng to'}
+                >
+                  <MemberAvatar member={member} index={index} className="tiny" />
+                  {isEditing && (
+                    <span className="avatar-cam-badge">
+                      <Camera size={9} />
+                    </span>
+                  )}
+                </span>
+                <span
+                  className={isOwner ? "member-name-clickable" : ""}
+                  onClick={() => {
+                    if (!isOwner) return
+                    setAddingMember(false)
+                    setMemberError('')
+                    setEditingMember(member)
+                    setEditMemberName(member.name)
+                    setEditMemberEmail(member.email || '')
+                  }}
+                  title={isOwner ? "Bấm để đổi tên & gắn email đăng nhập" : undefined}
+                >
+                  {member.name}
+                </span>
+                {member.email && (
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      color: '#166534',
+                      background: '#dcfce7',
+                      padding: '1px 6px',
+                      borderRadius: '4px',
+                      marginLeft: '4px',
+                      fontWeight: 500,
+                    }}
+                    title={`Đã gắn tài khoản: ${member.email}`}
+                  >
+                    🔗 {member.email}
                   </span>
                 )}
-              </span>
-              <span
-                className={isOwner ? "member-name-clickable" : ""}
-                onClick={() => {
-                  if (!isOwner) return
-                  setAddingMember(false)
-                  setMemberError('')
-                  setEditingMember(member)
-                  setEditMemberName(member.name)
-                  setEditMemberEmail(member.email || '')
-                }}
-                title={isOwner ? "Bấm để đổi tên & gắn email đăng nhập" : undefined}
-              >
-                {member.name}
-              </span>
-              {member.email && (
-                <span
-                  style={{
-                    fontSize: '11px',
-                    color: '#166534',
-                    background: '#dcfce7',
-                    padding: '1px 6px',
-                    borderRadius: '4px',
-                    marginLeft: '4px',
-                    fontWeight: 500,
-                  }}
-                  title={`Đã gắn tài khoản: ${member.email}`}
-                >
-                  🔗 {member.email}
-                </span>
-              )}
-            </div>
-          )
-        })}
-      </div>
-      {!isOwner && (
-        <div style={{ fontSize: '12px', color: '#4b5563', background: '#f3f4f6', padding: '8px 10px', borderRadius: '6px', marginTop: '8px' }}>
-          ℹ️ Người dùng đang xem sổ với vai trò <b>Thành viên được mời</b>. Chỉ chủ sổ mới có quyền thêm/sửa thành viên và gắn email tài khoản.
+              </div>
+            )
+          })}
         </div>
-      )}
-      {isOwner && !addingMember && !editingMember && (
-        <button type="button" className="button secondary account-manage-members" onClick={() => { setAddingMember(true); setMemberError(''); setNewMemberName(''); setNewMemberEmail('') }}>
-          <UserRoundPlus size={15} /> Thêm thành viên
-        </button>
-      )}
-      {isOwner && addingMember && (
-        <form className="account-add-member-form" onSubmit={(event) => void submitNewMember(event)}>
-          <label>Tên thành viên mới
-            <input autoFocus value={newMemberName} onChange={(event) => setNewMemberName(event.target.value)} maxLength={60} placeholder="Nhập tên thành viên" required />
-          </label>
-          <label style={{ marginTop: '8px' }}>
-            <span>Email đăng nhập (để người dùng này cùng vào sổ)</span>
-            <input type="email" value={newMemberEmail} onChange={(event) => setNewMemberEmail(event.target.value)} placeholder="ví dụ: email@gmail.com (không bắt buộc)" />
-          </label>
-          {memberError && <div className="form-error">{memberError}</div>}
-          <div style={{ marginTop: '8px' }}>
-            <button type="button" className="button secondary" disabled={savingMember} onClick={() => { setAddingMember(false); setNewMemberName(''); setNewMemberEmail(''); setMemberError('') }}>Hủy</button>
-            <button type="submit" className="button primary" disabled={savingMember || !newMemberName.trim()}>{savingMember ? 'Đang thêm...' : 'Thêm'}</button>
+        {!isOwner && (
+          <div style={{ fontSize: '12px', color: '#4b5563', background: '#f3f4f6', padding: '8px 10px', borderRadius: '6px', marginTop: '8px' }}>
+            ℹ️ Người dùng đang xem sổ với vai trò <b>Thành viên được mời</b>. Chỉ chủ sổ mới có quyền thêm/sửa thành viên và gắn email tài khoản.
           </div>
-        </form>
-      )}
-      {isOwner && editingMember && (
-        <form className="account-add-member-form" onSubmit={(event) => void submitEditMember(event)}>
-          {/* NOTE(VI): Lý do: Bỏ tên hiển thị bên ngoài ô nhập theo yêu cầu người dùng, chỉ giữ tên bên trong ô nhập để xem hoặc sửa; đổi text "bạn" thành "người dùng"
-              Trước: <label>Tên thành viên: <strong>{editingMember.name}</strong> ... </label> và các dòng nhắc có chữ "bạn"
-              Sau: <label><span>Tên thành viên</span> ... </label>, placeholder email@gmail.com, text "người dùng"
-              Test: Bấm vào thành viên để sửa -> Không còn dòng in tên ngoài ô nhập; thấy text "người dùng" rõ ràng */}
-          <label><span>Tên thành viên</span>
-            <input autoFocus value={editMemberName} onChange={(event) => setEditMemberName(event.target.value)} maxLength={60} placeholder="Nhập tên thành viên" required />
-          </label>
-          <label style={{ marginTop: '8px' }}>
-            <span>Email đăng nhập (để người dùng này cùng vào sổ)</span>
-            <input type="email" value={editMemberEmail} onChange={(event) => setEditMemberEmail(event.target.value)} placeholder="ví dụ: email@gmail.com (không bắt buộc)" />
-            <small style={{ color: '#6b7280', fontSize: '11px', display: 'block', marginTop: '3px' }}>
-              Người dùng đăng nhập đúng email này sẽ tự động được vào sổ với tên {editingMember.name}.
-            </small>
-          </label>
-          {memberError && <div className="form-error">{memberError}</div>}
-          <div style={{ marginTop: '8px' }}>
-            <button type="button" className="button secondary" disabled={savingMember} onClick={() => { setEditingMember(null); setEditMemberName(''); setEditMemberEmail(''); setMemberError('') }}>Hủy</button>
-            <button type="submit" className="button primary" disabled={savingMember || !editMemberName.trim()}>{savingMember ? 'Đang lưu...' : 'Lưu'}</button>
-          </div>
-        </form>
-      )}
-    </section>
+        )}
+        {isOwner && !addingMember && !editingMember && (
+          <button type="button" className="button secondary account-manage-members" onClick={() => { setAddingMember(true); setMemberError(''); setNewMemberName(''); setNewMemberEmail('') }}>
+            <UserRoundPlus size={15} /> Thêm thành viên
+          </button>
+        )}
+        {isOwner && addingMember && (
+          <form className="account-add-member-form" onSubmit={(event) => void submitNewMember(event)}>
+            <label>Tên thành viên mới
+              <input autoFocus value={newMemberName} onChange={(event) => setNewMemberName(event.target.value)} maxLength={60} placeholder="Nhập tên thành viên" required />
+            </label>
+            <label style={{ marginTop: '8px' }}>
+              <span>Email đăng nhập (để người dùng này cùng vào sổ)</span>
+              <input type="email" value={newMemberEmail} onChange={(event) => setNewMemberEmail(event.target.value)} placeholder="ví dụ: email@gmail.com (không bắt buộc)" />
+            </label>
+            {memberError && <div className="form-error">{memberError}</div>}
+            <div style={{ marginTop: '8px' }}>
+              <button type="button" className="button secondary" disabled={savingMember} onClick={() => { setAddingMember(false); setNewMemberName(''); setNewMemberEmail(''); setMemberError('') }}>Hủy</button>
+              <button type="submit" className="button primary" disabled={savingMember || !newMemberName.trim()}>{savingMember ? 'Đang thêm...' : 'Thêm'}</button>
+            </div>
+          </form>
+        )}
+        {isOwner && editingMember && (
+          <form className="account-add-member-form" onSubmit={(event) => void submitEditMember(event)}>
+            <label><span>Tên thành viên</span>
+              <input autoFocus value={editMemberName} onChange={(event) => setEditMemberName(event.target.value)} maxLength={60} placeholder="Nhập tên thành viên" required />
+            </label>
+            <label style={{ marginTop: '8px' }}>
+              <span>Email đăng nhập (để người dùng này cùng vào sổ)</span>
+              <input type="email" value={editMemberEmail} onChange={(event) => setEditMemberEmail(event.target.value)} placeholder="ví dụ: email@gmail.com (không bắt buộc)" />
+              <small style={{ color: '#6b7280', fontSize: '11px', display: 'block', marginTop: '3px' }}>
+                Người dùng đăng nhập đúng email này sẽ tự động được vào sổ với tên {editingMember.name}.
+              </small>
+            </label>
+            {memberError && <div className="form-error">{memberError}</div>}
+            <div style={{ marginTop: '8px' }}>
+              <button type="button" className="button secondary" disabled={savingMember} onClick={() => { setEditingMember(null); setEditMemberName(''); setEditMemberEmail(''); setMemberError('') }}>Hủy</button>
+              <button type="submit" className="button primary" disabled={savingMember || !editMemberName.trim()}>{savingMember ? 'Đang lưu...' : 'Lưu'}</button>
+            </div>
+          </form>
+        )}
+      </section>
+    )}
 
     {/* NOTE(VI): Lý do: Bổ sung danh sách các sổ chi tiêu của người dùng (sổ do mình tạo và sổ được mời)
         Trước: Chỉ hiển thị sổ mặc định
@@ -3132,10 +3171,23 @@ function AccountModal({
                             </button>
                           )}
                         </div>
-                        {!l.isOwner && l.linkedMemberName && (
-                          <span style={{ fontSize: '11px', color: '#6b7280' }}>
-                            Người dùng: <b>{l.linkedMemberName}</b>
-                          </span>
+                        {!l.isOwner && (
+                          <div style={{ fontSize: '11px', color: '#4b5563', marginTop: '3px', lineHeight: 1.4 }}>
+                            <span style={{ fontWeight: 600, color: '#374151' }}>Thành viên: </span>
+                            {isActive && members && members.length > 0 ? (
+                              members.filter((m) => m.active).map((m, idx, arr) => {
+                                const isMe = m.name === l.linkedMemberName || m.id === l.linkedMemberId
+                                return (
+                                  <span key={m.id}>
+                                    {isMe ? <strong style={{ color: '#166534' }}>{m.name} (là bạn)</strong> : m.name}
+                                    {idx < arr.length - 1 ? ', ' : ''}
+                                  </span>
+                                )
+                              })
+                            ) : (
+                              l.linkedMemberName ? <strong style={{ color: '#166534' }}>{l.linkedMemberName} (là bạn)</strong> : '—'
+                            )}
+                          </div>
                         )}
                       </div>
                       {isActive ? (
@@ -3155,6 +3207,60 @@ function AccountModal({
                 </div>
               )
             })}
+
+            {/* NOTE(VI): Lý do: Bổ sung dòng Sổ chi tiêu (chưa tạo) nếu tài khoản chưa có sổ cá nhân theo yêu cầu người dùng
+                Trước: Người dùng được mời không có chỗ để tạo sổ cá nhân riêng của mình
+                Sau: Hiển thị 1 sổ 'Sổ chi tiêu (chưa tạo)' kèm nút '+ Tạo sổ', click vào mở form Bắt đầu sổ mới
+                Test: Đăng nhập tài khoản mới được mời -> Thấy dòng 'Sổ chi tiêu (chưa tạo)' -> Bấm vào hiện form tạo sổ -> Có nút Hủy và Tạo */}
+            {!hasOwnedLedger && onCreatePersonalLedger && (
+              <div
+                onClick={() => {
+                  setCreatePersonalError('')
+                  setShowCreatePersonalForm(true)
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  background: '#fafaf9',
+                  border: '1.5px dashed #cbd5e1',
+                  cursor: 'pointer',
+                  transition: 'background 0.15s, border-color 0.15s',
+                }}
+                title="Bấm để tạo sổ chi tiêu cá nhân của bạn"
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <strong style={{ fontSize: '13px', color: '#4b5563' }}>Sổ chi tiêu</strong>
+                    <span style={{
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      padding: '1px 6px',
+                      borderRadius: '4px',
+                      background: '#f1f5f9',
+                      color: '#64748b',
+                    }}>
+                      chưa tạo
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '11px', color: '#9ca3af' }}>Bấm vào đây để tạo sổ của riêng bạn</span>
+                </div>
+                <button
+                  type="button"
+                  className="button secondary"
+                  style={{ height: '28px', fontSize: '12px', padding: '0 10px', whiteSpace: 'nowrap' }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setCreatePersonalError('')
+                    setShowCreatePersonalForm(true)
+                  }}
+                >
+                  <Plus size={13} /> Tạo sổ
+                </button>
+              </div>
+            )}
           </div>
         </section>
       )
@@ -3238,6 +3344,87 @@ function AccountModal({
             )}
           </div>
           <div className="avatar-lightbox-name">{previewAvatar.name}</div>
+        </div>
+      </div>
+    )}
+    {/* NOTE(VI): Lý do: Form Bắt đầu sổ mới khi tài khoản chưa có sổ cá nhân bấm tạo từ trong popup Tài khoản
+        Trước: Người dùng được mời không có cách nào tạo sổ cá nhân trừ khi đăng xuất tạo tài khoản khác
+        Sau: Mở popup form Bắt đầu sổ mới (giống hệt màn hình khởi tạo lúc đăng ký), có nút Hủy và Tạo sổ chi tiêu
+        Test: Bấm '+ Tạo sổ' trong danh sách sổ -> Hiện form Bắt đầu sổ mới -> Nhập tên 4 thành viên -> Bấm Tạo -> Sổ cá nhân được tạo và chuyển sang ngay */}
+    {showCreatePersonalForm && (
+      <div
+        className="avatar-lightbox-backdrop"
+        style={{ zIndex: 10000 }}
+        onClick={() => setShowCreatePersonalForm(false)}
+      >
+        <div
+          className="auth-card setup-card"
+          style={{ margin: 0, width: 'min(100%, 420px)', maxHeight: '92vh', overflowY: 'auto', position: 'relative' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="brand-mark" style={{ margin: '0 auto 16px' }}>
+            <Sparkles />
+          </div>
+          <span className="eyebrow" style={{ display: 'block', textAlign: 'center' }}>BẮT ĐẦU SỔ MỚI</span>
+          <h1>Nhóm mình có những ai?</h1>
+          <p>Đặt tên sổ và điền tên bốn thành viên. Bạn có thể đổi tên sau.</p>
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault()
+              if (!onCreatePersonalLedger) return
+              const form = new FormData(event.currentTarget)
+              const sName = String(form.get('name') ?? 'Sổ chi tiêu').trim() || 'Sổ chi tiêu'
+              const names = [1, 2, 3, 4].map((i) => String(form.get(`member${i}`) ?? '').trim())
+              if (names.some((name) => !name)) {
+                setCreatePersonalError('Vui lòng điền đủ tên 4 thành viên.')
+                return
+              }
+              setCreatingPersonal(true)
+              setCreatePersonalError('')
+              try {
+                await onCreatePersonalLedger(sName, names)
+                setShowCreatePersonalForm(false)
+              } catch (err: any) {
+                setCreatePersonalError(err?.message || 'Không tạo được sổ chi tiêu.')
+              } finally {
+                setCreatingPersonal(false)
+              }
+            }}
+            className="auth-form"
+          >
+            <label>
+              Tên sổ
+              <input name="name" defaultValue="Sổ chi tiêu" required />
+            </label>
+            <div className="member-input-grid">
+              {['Thành viên 1', 'Thành viên 2', 'Thành viên 3', 'Thành viên 4'].map((label, i) => (
+                <label key={label}>
+                  {label}
+                  <input name={`member${i + 1}`} placeholder={['Linh', 'Minh', 'Anh', 'Huy'][i]} required />
+                </label>
+              ))}
+            </div>
+            {createPersonalError && <div className="form-error">{createPersonalError}</div>}
+            <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
+              <button
+                type="button"
+                className="button secondary"
+                style={{ flex: 1, height: '40px', fontSize: '13px' }}
+                disabled={creatingPersonal}
+                onClick={() => setShowCreatePersonalForm(false)}
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                className="button primary"
+                style={{ flex: 2, height: '40px', fontSize: '13px' }}
+                disabled={creatingPersonal}
+              >
+                {creatingPersonal ? 'Đang tạo...' : 'Tạo sổ chi tiêu'}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     )}

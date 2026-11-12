@@ -351,11 +351,15 @@ textarea::-moz-placeholder{color:#9ca3af!important;font-size:11.5px!important;fo
 .period-current span b{font-weight:600;color:#39423b}
 .period-toolbar .button{height:35px;padding:0 13px;font-size:12.5px;font-weight:600;border-radius:8px;gap:6px}
 .page-heading p strong{font-weight:700;color:#69756b}
-.expense-meta{display:flex;align-items:center;justify-content:space-between;gap:7px;min-width:0}
-.expense-meta>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.expense-detail{gap:1px}
-.expense-meta .paid-stamp{flex:0 0 auto;align-self:center;flex-direction:row;margin:0;padding:2px 6px;transform:translateY(-1px) rotate(-1deg)}
-.expense-meta .paid-stamp strong{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"DM Sans",sans-serif;font-size:10.5px;font-weight:500;letter-spacing:.4px;color:#c32026}
+/* NOTE(VI): Lý do: Con dấu ĐÃ CHỐT SỔ đóng nổi như con dấu ngoài giấy đè lên nội dung bill, nội dung bên dưới hiển thị trọn vẹn
+   Trước: Con dấu nằm cùng dòng flex trong .expense-meta, ép chữ "Thương đã trả" bị co lại thành "...ng đã ..."
+   Sau: .expense-detail có position: relative; con dấu có position: absolute đóng nổi nghiêng -8deg, background trong suốt, text bên dưới hiển thị trọn vẹn
+   Test: Vào Lịch sử chi tiêu -> Khoản chi đã chốt hiện đầy đủ ngày & người trả, con dấu ĐÃ CHỐT SỔ đóng đè nhẹ nhàng chuẩn phong cách giấy */
+.expense-detail{position:relative;gap:1px;min-width:0}
+.expense-meta{display:flex;align-items:center;gap:7px;min-width:0}
+.expense-meta>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.expense-detail .paid-stamp{position:absolute;right:6px;top:50%;transform:translateY(-50%) rotate(-8deg);margin:0;padding:2px 7px 1px;border:1.5px solid #c32026;outline:1px solid #c32026;outline-offset:-3px;border-radius:2px;background:transparent;color:#c32026;pointer-events:none;user-select:none;z-index:2;opacity:.88;mix-blend-mode:multiply;white-space:nowrap;display:inline-flex}
+.expense-detail .paid-stamp strong{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"DM Sans",sans-serif;font-size:10.5px;font-weight:600;letter-spacing:.5px;color:#c32026}
 .expense-detail .settlement-date{font-size:10px;line-height:1.15;color:#929891;white-space:nowrap}
 .history-delete-button{border:0;padding:0;flex:0 0 auto;cursor:pointer;transition:background .15s,color .15s}
 .history-delete-button:hover{background:#fae9e6;color:#bd5148}

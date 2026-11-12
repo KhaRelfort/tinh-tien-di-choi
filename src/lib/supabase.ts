@@ -80,7 +80,14 @@ export async function signIn(email: string, password: string) {
 }
 export async function signUp(email: string, password: string) {
   if (!supabase) throw new Error('Chưa cấu hình Supabase.')
-  const { error } = await supabase.auth.signUp({ email, password })
+  const emailRedirectTo = typeof window !== 'undefined' ? window.location.origin : undefined
+  const { error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      emailRedirectTo,
+    },
+  })
   if (error) throw formatSupabaseError(error, 'Không thể tạo tài khoản.')
 }
 export async function signOut() { if (supabase) await supabase.auth.signOut() }
