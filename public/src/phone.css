@@ -1,0 +1,402 @@
+/* NOTE(VI): Lý do: Ẩn thanh cuộn dọc bên phải màn hình và trong các popup khi cuộn theo yêu cầu người dùng
+   Trước: Hiện thanh cuộn dọc mặc định của trình duyệt khi cuộn danh sách hoặc cuộn popup
+   Sau: Ẩn hoàn toàn scrollbar bằng scrollbar-width: none và ::-webkit-scrollbar { display: none }, vẫn giữ nguyên thao tác cuộn mượt
+   Test: Cuộn trang chính hoặc cuộn trong popup -> không thấy thanh cuộn dọc bên phải màn hình */
+*,*::before,*::after,html,body{scrollbar-width:none;-ms-overflow-style:none}
+*::-webkit-scrollbar,html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0;background:transparent}
+html,body,#root{min-height:100%;min-height:-webkit-fill-available;width:100%;background:#f6f5f1}
+:root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","DM Sans",sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+h1,h2,h3,strong{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Manrope,sans-serif}
+body{background:#f6f5f1}
+.app-shell{position:relative;width:100%;max-width:430px;min-height:100vh;min-height:100dvh;min-height:-webkit-fill-available;margin:0 auto;padding-top:env(safe-area-inset-top,0px);overflow-x:hidden;background:#f6f5f1;box-shadow:0 0 50px #1f2e1d14}
+.sidebar{display:none!important}
+.main-area{margin:0;min-height:100dvh}
+.topbar{height:58px;position:sticky;top:0;z-index:15;padding:0 17px;background:#f6f5f1ed;border-bottom:1px solid #eeeee9;backdrop-filter:blur(16px)}
+/* NOTE(VI): Lý do: Tiêu đề topbar SỔ CHI TIÊU NHÓM 1 dòng, to rõ ràng (16px) và căn giữa chuẩn với icon ví theo yêu cầu người dùng
+   Trước: font 13px, display grid 2 dòng có <small> phụ đề làm lệch chữ lên trên
+   Sau: font 16px/1, căn giữa flex thẳng hàng với icon ví 32px
+   Test: Xem header app -> Tiêu đề SỔ CHI TIÊU NHÓM to, rõ, cân đối chính giữa với icon ví */
+.app-wordmark{display:flex;align-items:center;gap:10px;min-width:0}
+.wordmark-icon{display:grid;place-items:center;width:32px;height:32px;flex:0 0 auto;border-radius:10px;background:#e8f1e9;color:#297555}
+.app-wordmark strong{font:800 16px/1 -apple-system,BlinkMacSystemFont,"SF Pro Display",Manrope,sans-serif;letter-spacing:-.3px;color:var(--green);display:inline-flex;align-items:center}
+.top-actions{gap:6px}
+.sync-status{gap:4px;font-size:12px}
+.sync-status svg{width:14px;height:14px}
+.account-button{width:36px;height:36px;display:grid;place-items:center;border:1px solid #eceee8;border-radius:50%;background:#fff;padding:0}
+.account-button:hover{background:#fff;border-color:#e1e5de}
+.account-avatar{width:27px;height:27px;display:grid;place-items:center;flex:0 0 auto;border-radius:50%;background:#fff;color:#89918a}
+.account-avatar.large{width:38px;height:38px}
+.account-modal-info{display:flex;align-items:center;gap:11px;padding:14px 12px;margin:4px 0 16px;border:1px solid #eeeee8;border-radius:11px;background:#fafbf8}
+.account-modal-info>div{display:grid;gap:5px;min-width:0}
+.account-modal-info span:not(.account-avatar){font-size:12px;color:#90968e}
+.account-modal-info strong{font-size:14px;overflow-wrap:anywhere}
+.account-logout{width:100%;height:42px;display:flex;align-items:center;justify-content:center;gap:8px;padding:0 12px;border:1px solid #f0dfdc;border-radius:9px;background:#fff8f7;color:#b7584c;text-align:center;font-size:13px;font-weight:700}
+.account-logout:hover{background:#fff0ee}
+.account-group-info{display:grid;gap:11px;padding:13px 12px;margin-bottom:14px;border:1px solid #eeeee8;border-radius:11px;background:#fff}
+.account-group-heading{display:grid;gap:4px}
+.account-group-heading span{font-size:12.5px;color:#90968e}
+.account-group-heading strong{font-size:12px;color:#343c35}
+.account-group-members{display:flex;flex-wrap:wrap;gap:7px}
+.account-group-heading span{font-size:12.5px;font-weight:700;color:#90968e}
+.date-hint{display:block;margin-top:3px;font-size:10.5px;font-weight:500;color:#a87930;line-height:1.3}
+.account-avatar-wrapper{position:relative;display:inline-flex;align-items:center;flex:0 0 auto}
+.account-avatar-btn{border:0;background:transparent;padding:0;cursor:pointer;border-radius:50%;display:grid;place-items:center;outline:none}
+.account-avatar-cam-btn{position:absolute;right:-2px;bottom:-2px;width:17px;height:17px;border-radius:50%;background:#257b5c;color:#fff;border:1.5px solid #fff;display:grid;place-items:center;cursor:pointer;padding:0;transition:transform .15s,background-color .15s}
+.account-avatar-cam-btn:hover{background:#1c634a;transform:scale(1.1)}
+.member-avatar-click-zone{position:relative;display:inline-grid;place-items:center;border-radius:50%;cursor:pointer}
+.member-name-clickable{cursor:pointer;user-select:none;font-weight:500;padding:2px 2px}
+.member-name-clickable:hover{color:var(--green);text-decoration:underline}
+.avatar-cam-badge{position:absolute;right:-3px;bottom:-3px;background:#257b5c;color:#fff;border-radius:50%;width:13px;height:13px;display:grid;place-items:center;border:1px solid #fff;pointer-events:none}
+.person-avatar img,.account-avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.avatar-lightbox-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(3px);z-index:9999;display:grid;place-items:center;padding:16px}
+.avatar-lightbox-card{position:relative;background:#fff;border-radius:18px;padding:22px;box-shadow:0 12px 36px rgba(0,0,0,.28);display:flex;flex-direction:column;align-items:center;gap:12px;max-width:280px;width:100%}
+.avatar-lightbox-close{position:absolute;top:10px;right:10px;background:#f1f3f0;border:none;border-radius:50%;width:26px;height:26px;display:grid;place-items:center;cursor:pointer;color:#555}
+.avatar-lightbox-close:hover{background:#e4e7e2;color:#111}
+.avatar-lightbox-image-wrap{width:180px;height:180px;border-radius:50%;overflow:hidden;box-shadow:0 4px 14px rgba(0,0,0,.1);display:grid;place-items:center;background:#f8faf7}
+.avatar-lightbox-img{width:100%;height:100%;object-fit:cover}
+.avatar-lightbox-fallback{width:100%;height:100%;display:grid;place-items:center;color:#fff;font-size:64px;font-weight:700}
+.avatar-lightbox-name{font-size:14px;font-weight:700;color:#2e3830;text-align:center}
+.edit-member-header{display:flex;align-items:flex-start;gap:8px}
+.account-group-member{display:inline-flex;align-items:center;gap:6px;padding:5px 10px 5px 6px;border:1px solid #eeeee8;border-radius:20px;background:#f7f8f5;color:#59635a;font-size:12.5px;cursor:pointer;transition:border-color .15s,background .15s}
+.account-group-member:hover{border-color:#b7decb;background:#f0f7f2;color:var(--green)}
+.account-group-member.active{border-color:var(--green);background:#e9f3ed;color:var(--green);font-weight:700}
+.account-manage-members{width:100%;height:38px;font-size:12.5px}
+.account-add-member-form{display:grid;gap:8px}
+.account-add-member-form label{display:grid;gap:5px;color:#667067;font-size:12.5px;font-weight:700}
+.account-add-member-form input{width:100%;height:38px;padding:0 10px;border:1px solid #e5e8e1;border-radius:7px;color:#303832;font-size:14px}
+.account-add-member-form>div{display:flex;justify-content:flex-end;gap:7px}
+.account-add-member-form .button{height:36px;padding:0 14px;font-size:12.5px}
+.content{width:100%;max-width:none;margin:0;padding:20px 17px calc(42px + env(safe-area-inset-bottom,0px))}
+.page-heading{align-items:center;gap:8px;margin-bottom:18px}
+.overview-heading{margin-bottom:15px}
+.overview-heading h1{font-size:21px}
+.page-heading .eyebrow{font-size:10px;margin-bottom:6px}
+.page-heading h1{font-size:22px;line-height:1.2;letter-spacing:-.75px}
+.page-heading p{font-size:13.5px;line-height:1.45}
+.page-heading>.button{height:36px;margin-top:12px;padding:0 10px;font-size:9px;white-space:nowrap}
+.summary-grid{grid-template-columns:1fr 1fr;gap:9px;margin-bottom:11px}
+.summary-card{position:relative;overflow:hidden;height:119px;padding:13px;border-radius:13px}
+.summary-card:first-child{grid-column:auto;height:119px}
+.summary-card>strong{position:relative;z-index:1;margin-top:9px;font-size:19px;font-weight:700;letter-spacing:-.3px}
+.summary-card:not(:first-child)>strong{font-size:15.5px;font-weight:700}
+.summary-card>small{position:relative;z-index:1;font-size:11.5px}
+.summary-top{position:relative;z-index:1;font-size:12.5px;font-weight:500;color:#717a72}
+.card-watermark{position:absolute;right:17px;bottom:-18px;font:800 104px Manrope,sans-serif;color:#dcebe0;transform:rotate(-10deg);pointer-events:none;z-index:0}
+.summary-icon{width:27px;height:27px}
+.summary-icon svg{width:15px;height:15px}
+.overview-grid,.settlement-layout{grid-template-columns:minmax(0,1fr);gap:10px}
+.inline-suggestions-panel{order:2;animation:suggestions-reveal .18s ease-out both}
+@keyframes suggestions-reveal{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+.overview-grid>.expense-panel{order:0}
+.overview-grid>.balance-panel{order:1}
+.panel{padding:14px;border-radius:13px}
+/* NOTE(VI): Lý do: Điều chỉnh typography theo chuẩn Apple HIG (SF Pro), giảm độ dày và kích thước hợp lý, giải quyết tình trạng chen chúc ở Số dư hiện tại và Gợi ý chuyển tiền
+   Trước: Dùng font dày Manrope 700/800, chữ to 14.5px, Số dư 2 cột bị chật, Gợi ý chuyển tiền bị cắt chữ Th...
+   Sau: Dùng cỡ font chuẩn Apple (13px - 14px, weight 500/600), avatar 28px vừa vặn, ẩn avatar đích phụ ở Gợi ý chuyển tiền để hiển thị trọn vẹn tên
+   Test: Vào tab Khoản chi và Quyết toán -> Kiểm tra Số dư hiện tại và Gợi ý chuyển tiền hiển thị thanh thoát, thoáng đãng, sắc nét, không bị cắt chữ */
+.panel-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:11px}
+.panel-heading h2{font-size:15px;font-weight:600;letter-spacing:-.2px;margin:0;line-height:1.2;color:#222a24}
+.panel-heading p{font-size:12px;font-weight:400;margin:3px 0 0;color:#788179}
+.expense-row{gap:8px;padding:9px 0}
+.expense-icon{width:31px;height:31px;flex-basis:31px}
+.expense-detail strong{font-size:13.5px;font-weight:500;color:#232b25}
+.expense-detail span{font-size:12px;font-weight:400;color:#788179}
+.expense-split-count{font-size:11.5px;padding:4px 7px}
+.expense-amount{font-size:14px;font-weight:600;color:#1e2620;font-variant-numeric:tabular-nums}
+.row-actions{opacity:1}
+.row-actions button{padding:4px}
+.balance-panel .balance-list{display:grid;grid-template-columns:1fr 1fr;column-gap:12px;row-gap:2px}
+.balance-row{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:7px 0;min-width:0}
+.balance-row .person-avatar{width:28px;height:28px;font-size:11.5px;font-weight:600;flex-shrink:0}
+.balance-row .person-info{min-width:0;flex:1;overflow:hidden}
+.balance-row .person-info strong{display:block;font-size:13px;font-weight:500;color:#232b25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.balance-row .balance-amount{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;flex-shrink:0;letter-spacing:-.15px}
+.settle-button{font-size:12px;padding-top:10px}
+.bottom-note{padding:12px 2px;font-size:12px}
+.full-panel{margin-top:0;padding:14px}
+/* NOTE(VI): Lý do: Giữ text và icon trong nút In bill và Lọc cùng 1 hàng, không xuống dòng khi màn hình hẹp
+   Trước: display: flex nhưng không có white-space: nowrap và flex-shrink: 0, text Lọc bị rớt dòng
+   Sau: white-space: nowrap, flex-shrink: 0, inline-flex, icon và chữ luôn thẳng hàng đẹp
+   Test: Xem màn hình mobile -> Nút In bill và Lọc nằm gọn 1 hàng, chữ không rớt xuống dòng */
+.expense-panel-actions{display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:nowrap}
+.filter-button{height:31px;display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:0 9px;border:1px solid #eceee8;border-radius:8px;background:#fff;color:#687169;font-size:12.5px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.filter-button span{white-space:nowrap}
+.filter-button:hover,.filter-button.active{border-color:#cbded0;background:#f3f8f4;color:#287b5d}
+.filter-badge{min-width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:#e4f0e6;color:#287b5d;font-size:11px;flex-shrink:0}
+.expense-filters{margin:0 0 9px;padding:11px;border:1px solid #eceee8;border-radius:9px;background:#fafbf8;animation:suggestions-reveal .16s ease-out both}
+.expense-filter-fields{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.expense-filter-fields label{display:grid;gap:5px;color:#727a72;font-size:12px;font-weight:700}
+.expense-filter-fields input,.expense-filter-fields select{width:100%;min-width:0;height:36px;padding:0 8px;border:1px solid #e5e8e1;border-radius:7px;background:#fff;color:#454d46;font-size:13px}
+.filters-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid #ecede8;color:#90968e;font-size:12px}
+.filters-footer button{border:0;background:transparent;color:#347b5b;font-size:12.5px;font-weight:700;padding:3px}
+.filters-footer button:disabled{color:#b5bab3}
+.full-panel .expense-row{display:grid;grid-template-columns:31px minmax(0,1fr) auto;gap:8px;padding:7px 0}
+.full-panel .expense-icon{grid-column:1;grid-row:1/3}
+.full-panel .expense-detail{grid-column:2;grid-row:1/3}
+.full-panel .expense-split-count{display:none}
+.full-panel .expense-amount{grid-column:3;grid-row:1;font-size:14px;font-weight:600}
+.full-panel .row-actions{grid-column:3;grid-row:2;justify-self:end}
+.full-panel .expense-detail strong{font-size:13.5px;font-weight:500}
+.table-count{font-size:8px;padding:5px 7px}
+/* NOTE(VI): Lý do: Bố cục (Avatar người chuyển) (Tên) (trả) (Avatar người nhận) (Tên) ở mục Gợi ý chuyển tiền
+   Trước: Avatar người nhận nằm sau cùng bị ẩn đi; dùng chữ "chuyển cho"
+   Sau: Dùng chữ "trả" gọn gàng; cả 2 avatar đều hiển thị cỡ 24px thanh lịch; tên và số tiền căn đều đẹp
+   Test: Vào tab Quyết toán -> Kiểm tra mục Gợi ý chuyển tiền hiển thị cả 2 avatar cân đối, có chữ "trả" ở giữa */
+.suggestion-row{grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:9px 0}
+.suggestion-people{display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden}
+.suggestion-people .person-avatar{width:24px;height:24px;font-size:11px;font-weight:600;flex-shrink:0}
+.suggestion-name{font-size:13px;font-weight:500;color:#232b25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.suggestion-verb{font-size:12px;font-weight:400;color:#7d867f;flex-shrink:0;margin:0 1px}
+.suggestion-row>strong{font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;color:#232b25;letter-spacing:-.15px}
+.suggestion-row .small-button{grid-column:auto;grid-row:auto;justify-self:end;width:29px;height:29px;min-width:29px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:7px;flex-shrink:0}
+.suggestion-debt-note{grid-column:1/-1;font-size:11.5px;color:#788279;margin-top:-2px;padding-left:2px;line-height:1.35}
+.history-row{gap:8px;padding:9px 0}
+.history-row strong,.history-row>strong{font-size:13px;font-weight:500}
+.history-row small{font-size:11.5px;font-weight:400;color:#858e86}
+.members-grid{grid-template-columns:1fr 1fr;gap:9px}
+.member-card{padding:13px 11px}
+.member-card-avatar{width:36px;height:36px;border-radius:12px;font-size:13px}
+.member-card h2{font-size:12px;margin:11px 0 7px}
+.member-card p{font-size:8px;margin-bottom:13px}
+.member-card p strong{font-size:10px}
+.member-card-balance{font-size:8px;padding-top:9px}
+.member-card-balance strong{font-size:9px}
+.owner-note{font-size:9px;line-height:1.45;padding:11px}
+/* NOTE(VI): Lý do: Nền nút menu dưới (Khoản chi và Quyết toán) bị khít sát chữ, mỏng dính trên iPhone
+   Trước: padding: 5px 1px, không có height cố định, không có background rõ ràng, chữ sát viền
+   Sau: Chiều cao nút 42px (chuẩn Apple), bo tròn 21px, nền pill rộng rãi thoáng đãng, padding 0 14px, cỡ chữ 12.5px rõ đẹp, tab active có nền xanh dịu nổi bật
+   Test: Xem trên iPhone hoặc mobile view -> 2 nút menu đáy to rõ, thoáng đãng, cách đáy safe-area hợp lý */
+.mobile-nav{display:none!important}
+.mobile-nav button{height:42px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 14px;border-radius:21px;border:1px solid #ecefe9;background:#f4f6f2;color:#687269;font-size:13.5px;font-weight:600;transition:all .18s ease;outline:none;-webkit-tap-highlight-color:transparent}
+.mobile-nav button:hover{background:#ebefe8;color:#384239}
+.mobile-nav button.active{background:#eaf4ed;border-color:#badcc6;color:var(--green);font-weight:700;box-shadow:0 2px 6px rgba(37,123,92,.1)}
+.mobile-nav button svg{width:18px;height:18px;flex:0 0 auto}
+.local-banner,.sync-banner{font-size:9px;padding:9px 10px;margin-bottom:12px}
+.local-banner button{font-size:9px;white-space:nowrap}
+.conflict-banner{flex-wrap:wrap}
+.conflict-banner>span{flex-basis:100%}
+.conflict-actions{width:100%}
+.conflict-actions button{font-size:8px}
+/* NOTE(VI): Lý do: Tăng nhẹ padding lề 2 bên trái/phải của popup lên mức cân đối (không quá sát viền), tính cả safe-area-inset-top để khi bàn phím ảo bật lên đỉnh popup không chạm vào thanh trạng thái iPhone, và khóa cuộn backdrop
+   Trước: Backdrop padding 14px 10px chưa cộng env(safe-area-inset-top)
+   Sau: Backdrop padding trên max(14px, calc(env(safe-area-inset-top, 0px) + 6px)), trái/phải 10px, modal-card padding 18px 14px
+   Test: Mở các popup trên điện thoại có/không có bàn phím -> Khoảng cách viền ngoài và lề trong cân đối, không bị lẹm vào giờ/pin iPhone */
+.modal-backdrop{display:flex;align-items:center;justify-content:center;padding:max(14px,calc(env(safe-area-inset-top,0px) + 6px)) 10px max(14px,env(safe-area-inset-bottom,0px));z-index:60;overflow:hidden;overscroll-behavior:none;touch-action:none}
+.modal-card{width:100%;max-width:420px;max-height:min(88dvh,750px);padding:18px 14px;border-radius:16px;overscroll-behavior:contain;touch-action:pan-y;margin:auto}
+.modal-heading h2{font-size:17px}
+.modal-heading p{font-size:12.5px}
+.expense-form{gap:12px}
+.form-two{gap:9px}
+.expense-form label{font-size:13px}
+.expense-form input,.expense-form select,.expense-form textarea{font-size:14.5px;padding:10px 11px}
+.member-chip{font-size:13px}
+.empty-state{min-height:150px}
+.empty-state p{font-size:13px}
+.auth-screen,.loading-screen{width:min(100%,430px);min-height:100dvh;margin:0 auto;padding:calc(20px + env(safe-area-inset-top,0px)) 16px calc(20px + env(safe-area-inset-bottom,0px));background:#f6f5f1;box-shadow:0 0 50px #1f2e1d14}
+.auth-card{padding:28px 21px;border-radius:17px}
+.auth-card h1{font-size:21px}
+.setup-card{width:min(100%,430px)}
+.add-member-button{justify-self:start;color:#347b5b;background:#f7faf7}
+.summary-avatar-stack .more-members{background:#edf0eb;color:#637065;border-color:#fff;font-size:8px}
+.confirm-settlement-content{display:grid;justify-items:center;gap:9px;padding:9px 0 21px;text-align:center}
+.confirm-transfer{display:flex;align-items:center;gap:13px;color:#728276}
+.confirm-member{width:40px;height:40px;display:grid;place-items:center;border-radius:50%;background:#e7a443;color:#fff;font-size:14px;font-weight:700}
+.confirm-member.receiver{background:#287b5d}
+.confirm-settlement-content p{margin:3px 0 0;color:#737b73;font-size:11px}
+.confirm-settlement-content p strong{color:#303a32}
+.confirm-settlement-content>b{font:800 21px Manrope,sans-serif;color:#287b5d;letter-spacing:-.5px}
+.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:max(14px,calc(env(safe-area-inset-top,0px) + 6px)) 10px max(14px,env(safe-area-inset-bottom,0px))}
+.centered-modal{width:100%;max-width:420px;max-height:min(88dvh,740px);padding:18px 14px;border-radius:16px;margin:auto}
+.centered-modal .modal-heading{position:relative;justify-content:center;text-align:center;padding:0 24px}
+.centered-modal .modal-heading>div{width:100%}
+.centered-modal .modal-heading .icon-button{position:absolute;right:-6px;top:-6px}
+.centered-modal .modal-heading .eyebrow{margin-left:auto;margin-right:auto}
+.centered-modal .modal-actions{justify-content:center}
+.wide-modal{width:100%;max-width:420px}
+.form-label-row{font-size:13px;font-weight:700;color:#596159;margin-bottom:-2px}
+.form-label-row .text-button{font-size:12.5px;font-weight:700}
+/* NOTE(VI): Lý do: Nâng cấp UI popup Thêm khoản chi theo yêu cầu:
+   1. Làm nổi bật 2 tab "Chia đều" & "Tùy chỉnh số tiền" (tăng chiều cao 38px, chữ 13.5px đậm, tab đang chọn có nền xanh var(--green) chữ trắng nổi bật).
+   2. Điều chỉnh nút gạt % tinh tế hơn (thu gọn 34x20px, chuyển màu xanh đồng bộ #358d69) để không lấn át 2 tab chính bên trên.
+   Trước: 2 tab nhỏ mờ (30px, 10px), nút gạt to và màu neon lấn át.
+   Sau: 2 tab chính hiển thị rõ ràng, nút gạt phụ tinh tế, phân cấp thị giác chuẩn xác.
+   Test: Mở modal Thêm khoản chi -> 2 tab to rõ, bấm chuyển qua lại tab chọn nổi bật; nút gạt % hài hòa phía dưới. */
+.split-toggle{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#eaefe8;border:1px solid #dce4d9;border-radius:10px;padding:4px}
+.split-toggle button{height:38px;border:0;border-radius:7px;background:transparent;color:#556257;font-size:13.5px;font-weight:600;display:flex;align-items:center;justify-content:center;transition:all .18s ease}
+.split-toggle button.selected{background:var(--green);color:#fff;font-weight:700;box-shadow:0 2px 7px rgba(37,123,92,.28)}
+.custom-splits-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0 4px}
+.custom-splits-header .percentage-toggle.ios-switch-wrap{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+.ios-switch-input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.ios-switch-slider{position:relative;display:inline-block;width:34px;height:20px;background:#e2e6e0;border-radius:10px;transition:background-color .2s ease;flex-shrink:0}
+.ios-switch-slider::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:transform .2s cubic-bezier(0.4,0,0.2,1)}
+.ios-switch-input:checked + .ios-switch-slider{background:#358d69}
+.ios-switch-input:checked + .ios-switch-slider::after{transform:translateX(14px)}
+.ios-switch-input:focus-visible + .ios-switch-slider{outline:2px solid #358d69;outline-offset:2px}
+.percentage-toggle-label{font-size:13px;font-weight:600;color:#303832}
+.custom-splits-header>small{font-size:11.5px;color:#768077;font-weight:500}
+.custom-split-row>span:first-child{font-size:13.5px;font-weight:600;color:#303832}
+.split-input-pair{display:grid;grid-template-columns:1fr 1fr;gap:6px;width:58%}
+.split-input-pair input,.custom-splits .custom-amount-input{width:100%;text-align:right;font-size:13.5px}
+.split-input-pair input[readonly]{background:#f7f8f5;color:#737b73}
+.custom-splits .custom-amount-input{width:58%;text-align:right}
+.split-summary{font-size:12.5px}
+.split-summary strong{font-size:13.5px}
+/* NOTE(VI): Lý do: Tinh chỉnh giao diện phiếu in nhiệt theo yêu cầu người dùng:
+   - Đầu bill bắt đầu từ PHIẾU THANH TOÁN (bỏ SỔ CHI TIÊU NHÓM & tên nhóm)
+   - Tất cả đường phân cách đổi thành nét đứt (dashed) như bill in thật
+   - Chi tiết khoản chi: chia đều chỉ hiển thị danh sách tên người chia; chia theo % hoặc tiền hiển thị gọn [Tên]: % hoặc tiền
+   - Mã QR gọn gàng, bỏ phần cảm ơn và mã vạch ở đáy bill
+   - 3 nút thao tác (Sao chép ảnh bill, Copy text, Đóng) xếp cùng 1 hàng ngang, nút sao chép giữ màu xanh var(--green) nổi bật
+   Test: Bấm In bill -> Thấy bill gọn gàng chuẩn hóa đơn in nhiệt, 3 nút bấm nằm thẳng hàng; bấm Sao chép ảnh bill rồi dán vào Zalo/Messenger hiển thị ảnh chuẩn đẹp */
+.bill-modal .modal-card{width:min(100%,480px);padding:14px 12px}
+.bill-preview-wrapper{display:flex;justify-content:center;align-items:flex-start;background:#eef1ec;border-radius:10px;padding:12px 6px;max-height:60vh;overflow-y:auto;overflow-x:hidden}
+.thermal-receipt-paper{width:100%;max-width:375px;height:auto!important;max-height:none!important;min-height:min-content;overflow:visible!important;flex-shrink:0;background:#ffffff;color:#181c19;font-family:'Space Mono','SF Mono',Consolas,'Courier New',Courier,monospace;font-size:11.5px;line-height:1.45;padding:20px 16px 22px;box-shadow:0 3px 16px rgba(0,0,0,0.09);position:relative;border:none;border-radius:0}
+.bill-printable{border:none!important;box-shadow:none!important;background:#ffffff!important;border-radius:0!important}
+.receipt-header{text-align:center;padding-bottom:2px}
+.receipt-doc-name{font-size:14px;font-weight:700;letter-spacing:1px;margin:0 0 4px;color:#111}
+.receipt-subtitle{font-size:11px;color:#4c554e;margin:2px 0}
+.receipt-meta{font-size:10px;color:#677069;margin-top:2px}
+.receipt-divider{border:none;border-top:1.5px dashed #384039;margin:9px 0}
+.receipt-divider.double{border:none;border-top:1.5px dashed #384039;border-bottom:1.5px dashed #384039;height:3px;margin:9px 0}
+.receipt-divider.light{border:none;border-top:1px dashed #c0c6bf;margin:6px 0}
+.receipt-section-title{font-size:11px;font-weight:700;letter-spacing:.5px;text-align:center;margin:5px 0 5px;color:#222}
+.receipt-table-header{display:flex;justify-content:space-between;font-weight:700;font-size:10px;color:#48524a;letter-spacing:.3px}
+.receipt-date-block{margin-bottom:8px}
+.receipt-date-label{font-size:10.5px;font-weight:700;color:#257b5c;background:#f2f7f3;padding:2px 6px;border-radius:4px;display:inline-block;margin:5px 0 3px}
+.receipt-item-row{padding:5px 0;border-bottom:1px dashed #eaeee8}
+.receipt-item-row:last-child{border-bottom:none}
+.receipt-item-main{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.receipt-item-title{font-size:11.5px;font-weight:700;color:#181c19;word-break:break-word}
+.receipt-item-amount{font-size:12px;font-weight:700;white-space:nowrap;color:#181c19}
+.receipt-item-sub{font-size:10px;color:#555f56;margin-top:2px;padding-left:14px}
+.receipt-item-split-box{font-size:9.5px;color:#59645a;margin-top:2px;padding-left:14px;line-height:1.4}
+.receipt-split-names{font-size:9.5px;color:#555f56;margin-top:1px;line-height:1.35}
+.receipt-split-detail-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.receipt-split-chip{background:#f6f8f4;padding:1px 5px;border-radius:3px;border:1px dashed #d5dbd3;font-size:9px}
+.receipt-item-note{font-style:italic;color:#7a847b;margin-top:2px}
+.receipt-empty{text-align:center;font-size:11px;color:#7a847b;padding:14px 0}
+.receipt-summary-block{display:grid;gap:4px;padding:2px 0}
+.receipt-summary-line{display:flex;justify-content:space-between;font-size:11px;color:#454f46}
+.receipt-total-line{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;font-weight:700;color:#181c19;padding-top:2px}
+.receipt-grand-total{font-size:16px;font-weight:700;color:#257b5c;letter-spacing:-.3px}
+.receipt-breakdown-list{display:grid;gap:5px;padding:2px 0}
+.receipt-breakdown-row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#242a25}
+.receipt-member-name{font-weight:600}
+.receipt-member-amounts{text-align:right}
+.receipt-member-amounts strong{font-weight:700}
+.receipt-member-amounts small{display:block;font-size:9px;color:#788279}
+.receipt-transfer-list{display:grid;gap:4px;padding:2px 0}
+.receipt-transfer-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:11px;color:#181c19}
+.receipt-transfer-names{color:#2a322c;line-height:1.4}
+.receipt-transfer-names b{font-weight:700;color:#181c19}
+.receipt-transfer-note{display:block;font-size:9.5px;color:#788279;font-style:italic}
+.receipt-transfer-amount{font-size:12px;font-weight:700;color:#257b5c;white-space:nowrap}
+.receipt-transfer-empty{text-align:center;font-size:10.5px;color:#7a847b;padding:3px 0}
+.receipt-payment-section{text-align:center;padding:2px 0 0}
+.receipt-bank-card{display:inline-block;text-align:left;font-size:10.5px;background:#f5f8f5;border:1px dashed #ccd4cb;border-radius:6px;padding:6px 11px;margin:2px auto 6px;line-height:1.55}
+.receipt-account-number{color:#257b5c;letter-spacing:.4px}
+.receipt-qr-wrap{text-align:center;margin:4px 0 0}
+.receipt-qr-code{width:165px;height:165px;max-width:80%;object-fit:contain;margin:0 auto;display:block;border-radius:8px;background:#fff;padding:4px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border:1px dashed #d5dbd4}
+.receipt-qr-hint{font-size:9.5px;color:#5c665d;margin-top:5px;font-style:italic}
+.receipt-chunk-badge{font-size:10px;font-weight:700;color:#257b5c;background:#edf6f1;border:1px dashed #b7decb;border-radius:4px;display:inline-block;padding:2px 7px;margin:3px 0 4px;letter-spacing:.3px}
+.receipt-chunk-footer-notice{text-align:center;font-size:9.5px;font-weight:700;color:#647066;letter-spacing:.4px;padding:7px 0 2px}
+.bill-actions-row{display:flex;align-items:center;gap:5px;margin-top:10px;width:100%}
+.bill-actions-row .button{height:38px;font-size:11.5px;padding:0 8px;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.bill-download-chunk-btn{flex:1.4;font-weight:700;border-radius:8px;background:var(--green)!important;color:#fff!important;box-shadow:0 2px 8px rgba(37,123,92,.25)}
+.bill-download-chunk-btn:hover{filter:brightness(1.05)}
+.bill-copy-text-btn{flex:1;border-radius:8px;background:#ffffff!important;color:#48524a!important;border:1px solid #d4dad3!important}
+.bill-close-btn{flex:0 0 auto;border-radius:8px;padding:0 12px;background:#ffffff!important;color:#556057!important;border:1px solid #d4dad3!important}
+.btn-label-mobile{display:none}
+@media (max-width: 420px){
+  .btn-label-desktop{display:none}
+  .btn-label-mobile{display:inline}
+}
+.summary-card .monthly-chart{position:absolute;right:11px;bottom:4px;width:56%;height:54px}
+.summary-card .monthly-chart .mini-bars{position:static;right:auto;bottom:auto;width:100%;height:43px;display:flex;align-items:stretch;gap:3px}
+.summary-card button.month-bar{position:relative;flex:1;min-width:0;height:100%;display:flex;align-items:flex-end;justify-content:center;overflow:visible;border:0;padding:0;background:transparent}
+.summary-card .month-bar i{position:absolute;bottom:0;display:block;width:8px;max-width:100%;min-height:0;border-radius:4px 4px 0 0;background:#e9e2cd}
+.summary-card .month-bar.current-month i{background:#dfb857}
+.summary-card .month-bar.no-data i{min-height:2px;background:#dfb857}
+.summary-card .month-bar b{position:absolute;left:50%;z-index:2;transform:translateX(-50%);font:700 7px 'DM Sans',sans-serif;color:#465349;white-space:nowrap}
+.summary-card .month-bar small{position:absolute;top:calc(100% + 1px);left:50%;transform:translateX(-50%);font:700 7px 'DM Sans',sans-serif;color:#6d796f;white-space:nowrap}
+.summary-card .month-bar.selected-month i{filter:saturate(1.2);box-shadow:0 0 0 1px #ffffff80}
+.summary-card .month-bar:focus-visible{outline:2px solid #b7decb;outline-offset:1px;border-radius:3px}
+/* NOTE(VI): Lý do: Tinh chỉnh phần "Kỳ hiện tại" theo chuẩn Apple HIG (SF Pro 14px Semibold / 12.5px Footnote), vừa vặn thanh lịch
+   Trước: Cỡ chữ 15px/13.5px bold dày cộm
+   Sau: Cỡ chữ 14px Semibold (600), ngày tháng 12.5px (400) với ngày nổi bật 600, nút Chốt kỳ cao 35px vừa vặn
+   Test: Vào tab Quyết toán -> Khung Kỳ hiện tại cân đối, thanh thoát chuẩn iOS */
+.period-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;padding:12px 14px}
+.period-accordion-panel{margin:0 0 10px;padding:12px 14px;cursor:pointer;user-select:none;transition:background .15s}
+.period-accordion-panel:hover{background:#fcfdfa}
+.period-accordion-header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.settlement-expanded-container{margin-top:12px;padding-top:12px;border-top:1px solid #eeeee8;display:grid;gap:12px;animation:suggestions-reveal .18s ease-out both}
+.settlement-notice-box{background:#f5f9f6;border:1px solid #dbeae0;border-radius:10px;padding:12px 13px;display:grid;gap:10px}
+.settlement-notice-text{display:flex;align-items:flex-start;gap:8px;color:#2d3f32;font-size:13px;line-height:1.45}
+.period-current{display:grid;gap:3px}
+.period-current h2,.period-current strong{font-size:15px;color:#222a24;font-weight:600;letter-spacing:-.2px;line-height:1.2;margin:0}
+.period-current span{font-size:12.5px;color:#727b73;font-weight:400}
+.period-current span b{font-weight:600;color:#39423b}
+.period-toolbar .button{height:35px;padding:0 13px;font-size:12.5px;font-weight:600;border-radius:8px;gap:6px}
+.page-heading p strong{font-weight:700;color:#69756b}
+.expense-meta{display:flex;align-items:center;justify-content:space-between;gap:7px;min-width:0}
+.expense-meta>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.expense-detail{gap:1px}
+.expense-meta .paid-stamp{flex:0 0 auto;align-self:center;flex-direction:row;margin:0;padding:2px 6px;transform:translateY(-1px) rotate(-1deg)}
+.expense-meta .paid-stamp strong{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"DM Sans",sans-serif;font-size:10.5px;font-weight:500;letter-spacing:.4px;color:#c32026}
+.expense-detail .settlement-date{font-size:10px;line-height:1.15;color:#929891;white-space:nowrap}
+.history-delete-button{border:0;padding:0;flex:0 0 auto;cursor:pointer;transition:background .15s,color .15s}
+.history-delete-button:hover{background:#fae9e6;color:#bd5148}
+.confirm-delete-content{display:grid;justify-items:center;gap:8px;padding:8px 0 20px;text-align:center}
+.confirm-delete-content strong{font-size:11px;color:#414a43}
+.confirm-delete-content b{font:800 20px Manrope,sans-serif;color:#bd5148}
+.button.danger{background:#b94b43;color:#fff;box-shadow:0 3px 8px #b94b4320}
+.button.danger:hover{background:#a73e37}
+@media print{
+  @page{margin:14mm}
+  body *{visibility:hidden!important}
+  .bill-modal,.bill-modal *,.bill-printable,.bill-printable *{visibility:visible!important}
+  .bill-modal{position:static!important;display:block!important;background:#fff!important;padding:0!important;backdrop-filter:none!important}
+  .bill-modal .modal-card{position:static!important;width:100%!important;max-width:none!important;max-height:none!important;overflow:visible!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
+  .bill-modal .modal-heading,.bill-modal .bill-actions,.bill-modal .icon-button{display:none!important}
+  .bill-preview{position:static!important;max-height:none!important;overflow:visible!important;border:0!important;padding:0!important}
+}
+
+/* NOTE(VI): Lý do: Dùng chung UI CSS cố định kích thước và vị trí cho cả 2 nút (Thêm khoản chi & Ghi nhận trả tiền) để khi chuyển tab không bị lệch hay co giật nút.
+   Trước: Nút co giãn theo độ dài text ("Thêm khoản chi" ngắn hơn "Ghi nhận trả tiền") nên mép trái bị lệch khi đổi tab.
+   Sau: Đặt kích thước cố định width: 148px, căn giữa nội dung, giữ nguyên vị trí góc phải tuyệt đối.
+   Test: Bấm chuyển qua lại giữa 2 tab "Khoản chi" và "Quyết toán", nút đứng yên tại chỗ không lệch 1 pixel nào, chỉ đổi text bên trong. */
+.account-version-info{display:grid;gap:10px;padding:12px;margin-bottom:14px;border:1px solid #eeeee8;border-radius:11px;background:#fafbf8}
+.account-version-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.account-version-title{display:block;font-size:12px;font-weight:700;color:#90968e}
+.account-version-number{font-size:13.5px;color:#555e56;margin-top:2px}
+.account-version-number strong{color:var(--green);font-weight:700}
+.version-check-btn{height:32px;padding:0 11px;font-size:12px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.version-status-msg{display:flex;align-items:center;gap:6px;font-size:12.5px;padding:8px 11px;border-radius:7px}
+.version-status-msg.success{background:#eef7f1;color:#237b58}
+.version-status-msg.error{background:#fdf1ef;color:#ba5748}
+.version-update-card{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border-radius:8px;background:#fdfaf2;border:1px solid #f2e2be}
+.version-update-text{display:flex;align-items:center;gap:6px;font-size:12.5px;color:#795d28}
+.version-update-btn{height:32px;padding:0 12px;font-size:12px;white-space:nowrap}
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
+.floating-add-expense{position:fixed;z-index:40;right:max(16px,calc((100vw - 430px)/2 + 16px));bottom:calc(18px + env(safe-area-inset-bottom,0px));height:40px;width:152px;padding:0 12px;border-radius:20px;display:inline-flex;align-items:center;justify-content:center;gap:6px;box-shadow:0 4px 14px #176b4a35;white-space:nowrap;font-size:12px;font-weight:700}
+.floating-add-expense svg{width:18px;height:18px;flex:0 0 auto}
+.floating-add-expense span{font-size:12px;font-weight:700;letter-spacing:-.2px}
+
+/* NOTE(VI): Lý do: Giữ app hiển thị tràn viền full màn hình xuống thanh Home của iPhone (edge-to-edge), đồng thời đưa tất cả modal/popup hiển thị ở giữa màn hình
+   Trước: modal bị ép thành bottom sheet (align-items: flex-end), bị tụt xuống đáy
+   Sau: html/body background #f6f5f1 tràn viền, modal hiển thị ở giữa màn hình (align-items: center, border-radius 18px cả 4 góc)
+   Test: Mở trên iPhone -> Nền app tràn viền xuống thanh Home, các popup (Thêm khoản chi, Tài khoản...) hiển thị nổi bật ở chính giữa màn hình */
+@media(max-width:560px){
+  html,body{padding-bottom:0;margin:0;background:#f6f5f1!important;min-height:100%;min-height:-webkit-fill-available}
+  .app-shell{width:100%;max-width:100%;min-height:100vh;min-height:100dvh;min-height:-webkit-fill-available;padding-top:0;box-shadow:none}
+  .main-area{min-height:100vh;min-height:100dvh;min-height:-webkit-fill-available}
+  .topbar{height:calc(56px + env(safe-area-inset-top,0px));padding:env(safe-area-inset-top,0px) 15px 0}
+  .content{padding:18px 15px calc(42px + env(safe-area-inset-bottom,0px))}
+  .mobile-nav{display:none!important}
+  .modal-backdrop,.modal-backdrop.centered-backdrop{display:flex;align-items:center;justify-content:center;padding:max(14px,calc(env(safe-area-inset-top,0px) + 6px)) 10px max(14px,env(safe-area-inset-bottom,0px));overflow:hidden}
+  .modal-card,.centered-modal,.wide-modal{margin:auto;border-radius:16px;width:100%;max-width:100%;max-height:min(88dvh,740px);padding:18px 14px}
+  .centered-modal .modal-heading .icon-button{right:-6px}
+}
+
