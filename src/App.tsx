@@ -5,7 +5,7 @@ import {
   Plus, ReceiptText, RefreshCw, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
   Wallet, X,
 } from 'lucide-react'
-import { toBlob } from 'html-to-image'
+import { toCanvas } from 'html-to-image'
 import JSZip from 'jszip'
 import {
   equalSplits, getBalances, getMemberDebtBreakdown, getUnpaidTotal, makeDemoLedger, makeId, memberColor, money, normalizeLedger,
@@ -1311,12 +1311,139 @@ function BillModal({
     window.setTimeout(() => setCopiedText(false), 2200)
   }
 
+  // NOTE(VI): Lý do: Khắc phục triệt để lỗi WebKit (Safari trên iPhone/iOS) không vẽ ảnh thẻ <img> bên trong SVG <foreignObject> khi xuất canvas
+  // Trên iOS Safari, WebKit sandbox chặn hoàn toàn các thẻ <img> hoặc raster data bên trong foreignObject khi vẽ lên Canvas, khiến ảnh bill tải về bị mất mã QR (chỉ còn khung nét đứt trắng).
+  // Giải pháp: Dùng toCanvas để xuất canvas layout gốc, sau đó dùng 2D Context (ctx.drawImage) vẽ đè mã QR VietQR Techcombank trực tiếp lên tọa độ khung QR trên canvas.
+  // Trước: Dùng toBlob() -> tải bill về trên iPhone bị mất mã QR
+  // Sau: toCanvas() + ctx.drawImage() trực tiếp -> ảnh QR hiển thị 100% đầy đủ, rõ nét trên cả iPhone, Android và máy tính
+  // Test: Bấm "Tải ảnh bill" -> Mở ảnh phần 1 -> Thấy mã QR Techcombank LE THI LY THUONG hiển thị rõ nét bên trong khung viền
+  async function renderReceiptNodeToBlob(node: HTMLElement): Promise<Blob> {
+    const options = await prepareReceiptRenderOptions(node)
+    const canvas = await toCanvas(node, options)
+
+    const qrEl = node.querySelector('.receipt-qr-code') as HTMLElement | null
+    if (qrEl) {
+      try {
+        const width = options.width || 375
+        const height = options.height || 600
+
+        // Đo tọa độ phần tử QR tương đối so với thẻ cha node
+        let relTop = 0
+        let relLeft = 0
+        let curr: HTMLElement | null = qrEl
+        while (curr && curr !== node) {
+          relTop += curr.offsetTop
+          relLeft += curr.offsetLeft
+          curr = curr.offsetParent as HTMLElement | null
+        }
+
+        // Bổ trợ độ chính xác bằng getBoundingClientRect
+        const qrRect = qrEl.getBoundingClientRect()
+        const nodeRect = node.getBoundingClientRect()
+        if (nodeRect.width > 0 && qrRect.width > 0) {
+          const gRelLeft = qrRect.left - nodeRect.left
+          const gRelTop = qrRect.top - nodeRect.top
+          if (!isNaN(gRelLeft) && gRelLeft >= 0 && gRelLeft < width) {
+            relLeft = gRelLeft
+          }
+          if (!isNaN(gRelTop) && gRelTop >= 0 && gRelTop < height) {
+            relTop = gRelTop
+          }
+        }
+
+        const qrWidth = qrEl.offsetWidth || qrRect.width || 165
+        const qrHeight = qrEl.offsetHeight || qrRect.height || 165
+
+        // Đọc padding và border để vẽ chính xác vào lòng trong của khung viền nét đứt
+        const compStyle = window.getComputedStyle(qrEl)
+        const padLeft = parseFloat(compStyle.paddingLeft) || 4
+        const padTop = parseFloat(compStyle.paddingTop) || 4
+        const padRight = parseFloat(compStyle.paddingRight) || 4
+        const padBottom = parseFloat(compStyle.paddingBottom) || 4
+        const borderLeft = parseFloat(compStyle.borderLeftWidth) || 1
+        const borderTop = parseFloat(compStyle.borderTopWidth) || 1
+        const borderRight = parseFloat(compStyle.borderRightWidth) || 1
+        const borderBottom = parseFloat(compStyle.borderBottomWidth) || 1
+
+        const insetLeft = borderLeft + padLeft
+        const insetTop = borderTop + padTop
+        const innerW = Math.max(20, qrWidth - insetLeft - borderRight - padRight)
+        const innerH = Math.max(20, qrHeight - insetTop - borderBottom - padBottom)
+
+        const fallbackX = Math.max(0, (width - qrWidth) / 2)
+        const safeRelLeft = (!isNaN(relLeft) && relLeft >= 0 && relLeft < width) ? relLeft : fallbackX
+        const safeRelTop = (!isNaN(relTop) && relTop >= 0 && relTop < height) ? relTop : 200
+
+        const scaleX = canvas.width / width
+        const scaleY = canvas.height / height
+
+        const destX = (safeRelLeft + insetLeft) * scaleX
+        const destY = (safeRelTop + insetTop) * scaleY
+        const destW = innerW * scaleX
+        const destH = innerH * scaleY
+
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          const qrImg = new Image()
+          qrImg.src = QR_PAYMENT_DATA_URL
+          if (qrImg.decode) {
+            try {
+              await qrImg.decode()
+            } catch {
+              // ignore decode error
+            }
+          }
+          if (!qrImg.complete) {
+            await new Promise<void>((resolve) => {
+              qrImg.onload = () => resolve()
+              qrImg.onerror = () => resolve()
+            })
+          }
+          const radius = Math.max(0, 4 * scaleX)
+          ctx.save()
+          ctx.beginPath()
+          if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(destX, destY, destW, destH, radius)
+          } else {
+            ctx.rect(destX, destY, destW, destH)
+          }
+          ctx.clip()
+          ctx.drawImage(qrImg, destX, destY, destW, destH)
+          ctx.restore()
+        }
+      } catch (err) {
+        console.warn('Lỗi vẽ QR code trực tiếp lên canvas:', err)
+      }
+    }
+
+    return new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob)
+        } else {
+          try {
+            const dataUrl = canvas.toDataURL('image/png')
+            const byteString = atob(dataUrl.split(',')[1])
+            const ab = new ArrayBuffer(byteString.length)
+            const ia = new Uint8Array(ab)
+            for (let k = 0; k < byteString.length; k++) {
+              ia[k] = byteString.charCodeAt(k)
+            }
+            resolve(new Blob([ia], { type: 'image/png' }))
+          } catch (e) {
+            reject(e)
+          }
+        }
+      }, 'image/png')
+    })
+  }
+
   // NOTE(VI): Lý do: Khắc phục triệt để lỗi trên iPhone (iOS Safari) chỉ tải được 1 ảnh và văng ra màn hình đen AnyDesk/QuickLook
   // Tách Trang 1 thành riêng trang Thông tin thanh toán (Header + Số tiền cần chuyển + QR code),
   // các trang tiếp theo chứa danh sách khoản chi (mỗi trang 10 khoản, trang cuối có Tổng tiền + Phân chia).
   // Trước: Trang 1 nhét cả Thông tin thanh toán lẫn 10 khoản chi đầu tiên
   // Sau: Trang 1 chỉ gồm đầu bill đến hết "Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh", Trang 2 trở đi là danh sách khoản chi
-  // Test: Bấm "Tải ảnh cắt gọn" -> Trang 1 xuất ra ảnh Thông tin thanh toán & QR, Trang 2 xuất ra 10 khoản chi đầu
+  // Test: Bấm "Tải ảnh bill" -> Trang 1 xuất ra ảnh Thông tin thanh toán & QR, Trang 2 xuất ra 10 khoản chi đầu
   async function downloadChunkedImages() {
     if (!expenses.length) return
     setDownloadingChunks(true)
@@ -1330,8 +1457,7 @@ function BillModal({
         const node = chunkRefs.current[i]
         if (!node) continue
 
-        const options = await prepareReceiptRenderOptions(node)
-        const blob = await toBlob(node, options)
+        const blob = await renderReceiptNodeToBlob(node)
         if (!blob) throw new Error(`Không tạo được ảnh phần ${i + 1}`)
 
         const filename = totalSheets > 1
