@@ -550,7 +550,11 @@ export default function App() {
       </form><button className="text-button" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>{authMode === 'login' ? 'Chưa có tài khoản? Tạo mới' : 'Đã có tài khoản? Đăng nhập'}</button>
       {authMode === 'signup' && <p className="hint">Nếu email cần xác nhận, hãy mở liên kết trong hộp thư trước khi đăng nhập.</p>}
     </div></div>
-  if (needsSetup && isCloudConfigured) return <div className="auth-screen"><div className="auth-card setup-card"><div className="brand-mark"><Sparkles /></div><span className="eyebrow">BẮT ĐẦU SỔ MỚI</span><h1>Nhóm mình có những ai?</h1><p>Đặt tên sổ và điền tên bốn thành viên. Bạn có thể đổi tên sau.</p>
+  // NOTE(VI): Lý do: Bỏ nền vuông màu xanh, icon ví phóng to nét vẽ màu xanh theo yêu cầu người dùng
+  // Trước: <div className="brand-mark"><Wallet /></div> (nền vuông xanh, icon trắng 20px)
+  // Sau: Icon Wallet to 46px, nét vẽ màu xanh var(--green), không có nền vuông
+  // Test: Tạo tài khoản mới hoặc vào màn hình Bắt đầu sổ mới -> Thấy icon ví nét vẽ xanh to rõ ràng, không có ô vuông nền
+  if (needsSetup && isCloudConfigured) return <div className="auth-screen"><div className="auth-card setup-card"><div style={{ display: 'grid', placeItems: 'center', margin: '0 auto 16px', color: 'var(--green, #257b5c)' }}><Wallet size={46} strokeWidth={2} /></div><span className="eyebrow">BẮT ĐẦU SỔ MỚI</span><h1>Nhóm mình có những ai?</h1><p>Đặt tên sổ và điền tên bốn thành viên. Bạn có thể đổi tên sau.</p>
     <form onSubmit={(event) => void createLedger(event)} className="auth-form"><label>Tên sổ<input name="name" defaultValue="Sổ chi tiêu" required /></label><div className="member-input-grid">{['Thành viên 1', 'Thành viên 2', 'Thành viên 3', 'Thành viên 4'].map((label, i) => <label key={label}>{label}<input name={`member${i + 1}`} placeholder={['Linh', 'Minh', 'Anh', 'Huy'][i]} required /></label>)}</div>{authError && <div className="form-error">{authError}</div>}<button className="button primary full">Tạo sổ chi tiêu</button></form>
   </div></div>
   if (!ledger) return <div className="loading-screen"><p>Đang chuẩn bị sổ chi tiêu...</p></div>
@@ -2228,19 +2232,10 @@ function ExpenseList({
         const locked = period?.status !== 'open'
         return <div className={`expense-row ${locked ? 'expense-row-settled' : ''}`} key={expense.id}>
           <span className="expense-icon"><Icon size={17} /></span>
-          {/* NOTE(VI): Lý do: Con dấu ĐÃ CHỐT SỔ hiển thị dạng đóng dấu nổi đè lên nội dung bill (overlay), cho phép nội dung bill (ngày, người trả, tên khoản chi) hiển thị trọn vẹn bên dưới như con dấu đóng ngoài giấy, không bị ép co ngắn hay cắt chữ thành dấu ba chấm
-              Trước: Con dấu nằm inline trong expense-meta chiếm chiều ngang, ép tên người trả bị cắt ngắn thành "...ng đã ..."
-              Sau: Con dấu đóng đè lên (absolute overlay) nghiêng -8deg, chữ và ngày bên dưới hiển thị trọn vẹn
-              Test: Xem lịch sử chi tiêu mục đã chốt -> Chữ "Thương đã trả" hiển thị đầy đủ; con dấu ĐÃ CHỐT SỔ đóng nổi màu đỏ thanh lịch như đóng trên giấy */}
           <div className="expense-detail">
             <strong>{expense.title}</strong>
             <div className="expense-meta"><span>{formatDate(expense.date)} <i /> {payer?.name ?? 'Thành viên đã ngừng hoạt động'} đã trả</span></div>
             {period && period.status !== 'open' && <small className="settlement-date">Chốt sổ: {formatDate(period.endDate ?? period.settledAt ?? period.startDate)}</small>}
-            {period && period.status !== 'open' && (
-              <span className="paid-stamp" aria-hidden="true">
-                <strong style={{ color: '#c32026', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "DM Sans", sans-serif', fontWeight: 500, letterSpacing: '0.4px' }}>ĐÃ CHỐT SỔ</strong>
-              </span>
-            )}
           </div>
           <span className="expense-split-count">{expense.splits.length} người</span>
           <strong className="expense-amount">{money(expense.amount)}</strong>
@@ -2258,6 +2253,15 @@ function ExpenseList({
                 <button type="button" aria-label="Xóa khoản chi" title="Xóa" onClick={() => onDelete(expense)}><X size={15} /></button>
               </>}
           </div>
+          {/* NOTE(VI): Lý do: Con dấu ĐÃ CHỐT SỔ đặt trực tiếp trên expense-row để căn thẳng hàng dọc từ trên xuống dưới, không bị lệch méo qua lại do số tiền ngắn/dài khác nhau
+              Trước: Đặt trong expense-detail bị phụ thuộc độ rộng cột tiền, có góc nghiêng -8deg gây cảm giác méo
+              Sau: Đặt trên expense-row với right cố định, nằm ngang ngay ngắn, thẳng hàng tắp từ trên xuống dưới
+              Test: Mở Lịch sử chi tiêu -> Toàn bộ con dấu ĐÃ CHỐT SỔ thẳng tắp 1 hàng dọc từ trên xuống dưới, không méo */}
+          {period && period.status !== 'open' && (
+            <span className="paid-stamp" aria-hidden="true">
+              <strong style={{ color: '#c32026', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "DM Sans", sans-serif', fontWeight: 500, letterSpacing: '0.4px' }}>ĐÃ CHỐT SỔ</strong>
+            </span>
+          )}
         </div>
       })}
     </div>
@@ -3362,8 +3366,12 @@ function AccountModal({
           style={{ margin: 0, width: 'min(100%, 420px)', maxHeight: '92vh', overflowY: 'auto', position: 'relative' }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="brand-mark" style={{ margin: '0 auto 16px' }}>
-            <Sparkles />
+          {/* NOTE(VI): Lý do: Bỏ nền vuông màu xanh, icon ví phóng to nét vẽ màu xanh theo yêu cầu người dùng
+              Trước: <div className="brand-mark" style={{ margin: '0 auto 16px' }}><Wallet /></div>
+              Sau: Icon Wallet to 46px, nét vẽ màu xanh var(--green), không có nền vuông
+              Test: Bấm '+ Tạo sổ' trong popup tài khoản -> Thấy icon ví nét vẽ xanh to rõ ràng, không có ô vuông nền */}
+          <div style={{ display: 'grid', placeItems: 'center', margin: '0 auto 16px', color: 'var(--green, #257b5c)' }}>
+            <Wallet size={46} strokeWidth={2} />
           </div>
           <span className="eyebrow" style={{ display: 'block', textAlign: 'center' }}>BẮT ĐẦU SỔ MỚI</span>
           <h1>Nhóm mình có những ai?</h1>
