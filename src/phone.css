@@ -296,7 +296,7 @@ body{background:#f6f5f1}
 .receipt-bank-card{display:inline-block;text-align:left;font-size:10.5px;background:#f5f8f5;border:1px dashed #ccd4cb;border-radius:6px;padding:6px 11px;margin:2px auto 6px;line-height:1.55}
 .receipt-account-number{color:#257b5c;letter-spacing:.4px}
 .receipt-qr-wrap{text-align:center;margin:4px 0 0}
-.receipt-qr-code{width:165px;height:165px;max-width:80%;object-fit:contain;margin:0 auto;display:block;border-radius:8px;background:#fff;padding:4px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border:1px dashed #d5dbd4}
+.receipt-qr-code{width:165px;height:165px;max-width:80%;object-fit:contain;margin:0 auto;display:block;border-radius:8px;background:#fff;padding:4px;border:1px dashed #d5dbd4}
 .receipt-qr-hint{font-size:9.5px;color:#5c665d;margin-top:5px;font-style:italic}
 .receipt-chunk-badge{font-size:10px;font-weight:700;color:#257b5c;background:#edf6f1;border:1px dashed #b7decb;border-radius:4px;display:inline-block;padding:2px 7px;margin:3px 0 4px;letter-spacing:.3px}
 .receipt-chunk-footer-notice{text-align:center;font-size:9.5px;font-weight:700;color:#647066;letter-spacing:.4px;padding:7px 0 2px}

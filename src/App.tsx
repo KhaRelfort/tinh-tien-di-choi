@@ -605,15 +605,21 @@ export default function App() {
           }
         }
       }
+      // NOTE(VI): Lý do: Sắp xếp hóa đơn in bill theo đúng trình tự thời gian diễn ra thực tế (ngược lại chuẩn xác 100% với danh sách Lịch sử chi tiêu trên App).
+      // Ngày: từ cũ đến mới (a.date -> b.date).
+      // Trong ngày: khoản nào thêm trước/chi trước in trước, khoản nào thêm sau/chi sau in sau ((a.createdAt ?? a.updatedAt).localeCompare(b.createdAt ?? b.updatedAt)).
+      // Trước: a.date.localeCompare(b.date) || a.title.localeCompare(b.title) -> trong ngày bị sắp xếp theo bảng chữ cái A-Z (Q, S, T, V, X...) làm đảo lộn trình tự
+      // Sau: a.date.localeCompare(b.date) || (a.createdAt ?? a.updatedAt ?? '').localeCompare(b.createdAt ?? b.updatedAt ?? '')
+      // Test: Mở in bill -> các khoản chi trong cùng một ngày được in theo đúng trình tự thời gian thêm (món nào chi trước lên trước, món chi sau nằm sau)
       return {
-        expenses: [...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+        expenses: [...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt ?? a.updatedAt ?? '').localeCompare(b.createdAt ?? b.updatedAt ?? '') || a.id.localeCompare(b.id)),
         subtitle,
       }
     }
     const currentPeriodExpenses = ledger.expenses.filter((e) => e.periodId === openPeriod?.id || (!e.periodId && openPeriod))
     if (currentPeriodExpenses.length > 0) {
       return {
-        expenses: [...currentPeriodExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+        expenses: [...currentPeriodExpenses].sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt ?? a.updatedAt ?? '').localeCompare(b.createdAt ?? b.updatedAt ?? '') || a.id.localeCompare(b.id)),
         subtitle: openPeriod ? `Kỳ hiện tại (từ ${formatDate(openPeriod.startDate)} đến nay)` : 'Kỳ hiện tại (chưa chốt sổ)',
       }
     }
@@ -623,12 +629,12 @@ export default function App() {
         ? `Kỳ vừa chốt sổ (${formatDate(lastClosedPeriod.startDate)} – ${formatDate(lastClosedPeriod.endDate)})`
         : `Kỳ vừa chốt sổ (từ ${formatDate(lastClosedPeriod.startDate)})`
       return {
-        expenses: [...closedExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+        expenses: [...closedExpenses].sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt ?? a.updatedAt ?? '').localeCompare(b.createdAt ?? b.updatedAt ?? '') || a.id.localeCompare(b.id)),
         subtitle: periodLabel,
       }
     }
     return {
-      expenses: [...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+      expenses: [...filteredExpenses].sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt ?? a.updatedAt ?? '').localeCompare(b.createdAt ?? b.updatedAt ?? '') || a.id.localeCompare(b.id)),
       subtitle: 'Toàn bộ khoản chi',
     }
   })()
@@ -648,7 +654,17 @@ export default function App() {
       nextPeriods = [...ledger.periods, openPeriod]
     }
     const periodId = expense.periodId ?? openPeriod.id
-    const record = { ...expense, periodId, updatedAt: new Date().toISOString() }
+    const nowIso = new Date().toISOString()
+    // NOTE(VI): Lý do: Giữ nguyên vị trí khoản chi khi sửa (không bị nhảy lên đầu)
+    // Khi thêm mới: tạo createdAt mới nhất -> tự động nằm trên đầu ngày đó
+    // Khi sửa: giữ nguyên createdAt ban đầu -> vị trí tương đối giữa các khoản chi không bị thay đổi
+    const createdAt = previous?.createdAt || previous?.updatedAt || expense.createdAt || nowIso
+    const record: Expense = {
+      ...expense,
+      periodId,
+      createdAt,
+      updatedAt: nowIso,
+    }
     const operation: Operation = { opId: makeId(), kind: 'expense_upsert', record, expectedUpdatedAt: previous?.updatedAt ?? null }
     await commitOperation(operation, (current) => ({
       ...current,
@@ -939,11 +955,11 @@ export default function App() {
               <label>Thành viên<select value={expenseFilters.memberId} onChange={(event) => setExpenseFilters({ ...expenseFilters, memberId: event.target.value })}><option value="">Tất cả thành viên</option>{ledger.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
               <label>Trạng thái<select value={expenseFilters.paymentStatus} onChange={(event) => setExpenseFilters({ ...expenseFilters, paymentStatus: event.target.value })}><option value="">Tất cả trạng thái</option><option value="unpaid">Chưa chốt sổ</option><option value="paid">Đã chốt sổ</option></select></label>
             </div><div className="filters-footer"><span>{filteredExpenses.length} khoản phù hợp</span><button disabled={activeFilterCount === 0} onClick={() => setExpenseFilters({ fromDate: '', toDate: '', category: '', memberId: '', paymentStatus: '', periodId: '' })}>Xóa bộ lọc</button></div></div>}
-            {/* NOTE(VI): Lý do: Sắp xếp hóa đơn thêm sau đưa lên trên (ưu tiên ngày mới nhất desc, cùng ngày thì khoản nào thêm sau/cập nhật sau - updatedAt desc - sẽ xếp lên trên đầu).
-                Trước: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date))
-                Sau: [...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))
-                Test: Thêm khoản chi mới -> khoản chi vừa thêm hiển thị ngay dòng trên cùng của Lịch sử chi tiêu */}
-            <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} onView={(expense) => setViewingExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : (ledger.expenses.length ? 'Chưa có khoản chi nào trong kỳ này và kỳ vừa chốt.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.')} />
+            {/* NOTE(VI): Lý do: Giữ nguyên quy tắc khi thêm mới (khoản thêm mới đưa lên đầu ngày/ngày mới), nhưng khi sửa khoản chi thì giữ nguyên vị trí cũ không đưa lên đầu theo yêu cầu người dùng
+                Trước: Sắp xếp theo b.updatedAt -> khi sửa khoản chi thì updatedAt đổi mới nhất, làm khoản đó nhảy lên đầu danh sách
+                Sau: Sắp xếp theo b.date desc rồi đến (b.createdAt ?? b.updatedAt ?? '') desc -> khi thêm mới có createdAt mới nhất nên vẫn lên đầu; khi sửa thì createdAt giữ nguyên vị trí ban đầu không bị nhảy
+                Test: Thêm khoản chi mới -> hiển thị trên cùng; bấm Sửa 1 khoản chi ở giữa danh sách và Lưu -> khoản chi vẫn đứng yên đúng vị trí đó */}
+            <ExpenseList key={JSON.stringify(expenseFilters)} expenses={[...filteredExpenses].sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt ?? b.updatedAt ?? '').localeCompare(a.createdAt ?? a.updatedAt ?? '') || b.id.localeCompare(a.id))} members={ledger.members} periods={ledger.periods} onEdit={(expense) => { setEditing(expense); setModal('expense') }} onDelete={(expense) => void deleteExpense(expense)} onView={(expense) => setViewingExpense(expense)} emptyText={activeFilterCount ? 'Không tìm thấy khoản chi phù hợp với bộ lọc.' : (ledger.expenses.length ? 'Chưa có khoản chi nào trong kỳ này và kỳ vừa chốt.' : 'Chưa có khoản chi nào. Thêm khoản chi đầu tiên nhé.')} />
           </section>
 
       </div>
@@ -3077,7 +3093,7 @@ function ExpenseModal({
     try {
       localStorage.setItem('expense-split-member-ids', JSON.stringify(selected))
     } catch { /* ignore */ }
-    onSave({ id: initial?.id ?? makeId(), title: title.trim(), amount: numericAmount, payerId, date, category, note: note.trim(), splitMode: finalSplitMode, splits, periodId: initial?.periodId ?? null, updatedAt: new Date().toISOString() })
+    onSave({ id: initial?.id ?? makeId(), title: title.trim(), amount: numericAmount, payerId, date, category, note: note.trim(), splitMode: finalSplitMode, splits, periodId: initial?.periodId ?? null, createdAt: initial?.createdAt, updatedAt: new Date().toISOString() })
   }
   const updateSelected = (next: string[]) => {
     setSelected(next)

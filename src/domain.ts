@@ -11,6 +11,7 @@ export type Split = { memberId: string; amount: number }
 export type Expense = {
   id: string; title: string; amount: number; payerId: string; date: string; note: string;
   category: string; splitMode: 'equal' | 'custom' | 'percent'; splits: Split[]; periodId: string | null; updatedAt: string
+  createdAt?: string
 }
 export type Settlement = {
   id: string; fromMemberId: string; toMemberId: string; amount: number; date: string; note: string; periodId: string | null; updatedAt: string

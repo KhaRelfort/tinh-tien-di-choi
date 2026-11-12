@@ -3,48 +3,19 @@ import react from '@vitejs/plugin-react'
 // @ts-ignore
 import fs from 'fs'
 
+// NOTE(VI): Lý do: Giữ DUY NHẤT 1 file version là public/version.js theo đúng chuẩn Vite.
+// Trước: Có 2 file (version.js ở gốc và public/version.js) -> gây lỗi lệch phiên bản, Vercel luôn lấy file cũ đè lên file mới làm điện thoại bị tụt 1 bản.
+// Sau: Chỉ dùng 1 file duy nhất public/version.js làm nguồn chân lý, xóa bỏ file version.js thừa ở gốc.
+// Test: Sửa số version trong public/version.js -> localhost và Vercel luôn ra đúng 100% số version vừa sửa.
 function getAppVersion(): string {
   try {
-    const content = fs.readFileSync('version.js', 'utf8')
+    const content = fs.readFileSync('public/version.js', 'utf8')
     const match = content.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/)
     return match ? match[1] : '1.0.0'
   } catch {
     return '1.0.0'
   }
 }
-
-// NOTE(VI): Lý do: Đồng bộ 2 chiều giữa version.js (gốc) và public/version.js theo thời gian sửa mới nhất (mtimeMs)
-// Trước: Chỉ chép 1 chiều từ version.js (gốc) đè sang public/version.js -> khi người dùng mở tab public/version.js để sửa (vd lên 2.2, 2.5) thì bị ghi đè ngược lại thành 2.1 của file gốc
-// Sau: Kiểm tra mtimeMs của 2 file, file nào vừa được người dùng lưu mới hơn sẽ tự động đồng bộ sang file kia (chỉ ghi khi nội dung khác nhau)
-// Test: Sửa version ở bất kỳ file nào (version.js gốc hoặc public/version.js) -> cả 2 file đều giữ đúng số version mới nhất, không bao giờ bị tự nhảy về số cũ
-function syncVersionFile() {
-  try {
-    const rootPath = 'version.js'
-    const publicPath = 'public/version.js'
-    const hasRoot = fs.existsSync(rootPath)
-    const hasPublic = fs.existsSync(publicPath)
-
-    if (hasRoot && hasPublic) {
-      const rootContent = fs.readFileSync(rootPath, 'utf8')
-      const publicContent = fs.readFileSync(publicPath, 'utf8')
-      if (rootContent !== publicContent) {
-        const rootStat = fs.statSync(rootPath)
-        const publicStat = fs.statSync(publicPath)
-        if (publicStat.mtimeMs > rootStat.mtimeMs) {
-          fs.writeFileSync(rootPath, publicContent, 'utf8')
-        } else {
-          fs.writeFileSync(publicPath, rootContent, 'utf8')
-        }
-      }
-    } else if (hasRoot && fs.existsSync('public')) {
-      fs.writeFileSync(publicPath, fs.readFileSync(rootPath, 'utf8'), 'utf8')
-    } else if (hasPublic) {
-      fs.writeFileSync(rootPath, fs.readFileSync(publicPath, 'utf8'), 'utf8')
-    }
-  } catch { /* ignore */ }
-}
-
-syncVersionFile()
 
 const appVersion = getAppVersion()
 
@@ -155,9 +126,8 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((req: any, res, next) => {
           if (req.url && req.url.startsWith('/version.js')) {
-            syncVersionFile()
-            const content = fs.existsSync('version.js')
-              ? fs.readFileSync('version.js', 'utf8')
+            const content = fs.existsSync('public/version.js')
+              ? fs.readFileSync('public/version.js', 'utf8')
               : `export const APP_VERSION = '${getAppVersion()}';`
             res.setHeader('Content-Type', 'application/javascript')
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
@@ -177,15 +147,12 @@ export default defineConfig({
         })
       },
       generateBundle(_options, bundle) {
-        syncVersionFile()
         const latestAppVersion = getAppVersion()
         const assets = Object.keys(bundle).filter((name) => name.startsWith('assets/') && /\.(js|css)$/.test(name)).map((name) => `/${name}`)
         const cacheName = `chia-tien-shell-v${latestAppVersion}`
-        const versionFileContent = fs.existsSync('version.js') ? fs.readFileSync('version.js', 'utf8') : `export const APP_VERSION = '${latestAppVersion}';`
         const shellUrls = ['/', '/version.js', '/manifest.webmanifest', '/icon.svg', '/apple-touch-icon.png', '/qr-payment.jpg', ...assets]
         const source = createServiceWorkerSource(cacheName, shellUrls)
         this.emitFile({ type: 'asset', fileName: 'sw.js', source })
-        this.emitFile({ type: 'asset', fileName: 'version.js', source: versionFileContent })
       },
     },
   ],
