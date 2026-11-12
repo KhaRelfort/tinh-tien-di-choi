@@ -886,7 +886,11 @@ export default function App() {
                 >
                   <div className="settlement-notice-text">
                     <Info size={17} style={{ color: '#287b5d', flexShrink: 0, marginTop: '2px' }} />
-                    <span>Phải bấm chốt sổ để chốt kỳ tính toán này trước khi báo thanh toán cho các thành viên.</span>
+                    {/* NOTE(VI): Lý do: Đổi lời nhắc chốt sổ theo yêu cầu người dùng
+                    Trước: "Phải bấm chốt sổ để chốt kỳ tính toán này trước khi báo thanh toán cho các thành viên."
+                    Sau: "Chỉ bấm chốt sổ sau khi đã xác nhận bill chính xác với các thành viên."
+                    Test: Mở phần Quyết toán -> Kiểm tra hộp thông báo trước nút Chốt sổ kỳ này */}
+                    <span>Chỉ bấm chốt sổ sau khi đã xác nhận bill chính xác với các thành viên.</span>
                   </div>
                   {selectedPeriod?.status === 'open' && (
                     <button
