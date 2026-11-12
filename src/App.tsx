@@ -15,6 +15,7 @@ import { clearQueue, queueOperation, readLedger, readQueue, removeOperation, rep
 import {
   fetchCloudLedger, fetchMonthlyExpenseTotals, initializeCloudLedger, isCloudConfigured, signIn, signOut, signUp, supabase, syncOperation,
 } from './lib/supabase'
+import { QR_PAYMENT_DATA_URL } from './qrData'
 
 
 // NOTE(VI): Lý do: Icon xe máy tối giản theo chuẩn phong cách nét vẽ 24x24 của Lucide
@@ -1239,12 +1240,20 @@ function BillModal({
   async function prepareReceiptRenderOptions(node: HTMLElement) {
     const imgs = Array.from(node.querySelectorAll('img'))
     await Promise.all(
-      imgs.map((img) => {
-        if (img.complete && img.naturalHeight !== 0) return Promise.resolve()
-        return new Promise<void>((resolve) => {
-          img.onload = () => resolve()
-          img.onerror = () => resolve()
-        })
+      imgs.map(async (img) => {
+        if (!img.complete) {
+          await new Promise<void>((resolve) => {
+            img.onload = () => resolve()
+            img.onerror = () => resolve()
+          })
+        }
+        if (img.decode) {
+          try {
+            await img.decode()
+          } catch {
+            // ignore decode error
+          }
+        }
       })
     )
 
@@ -1263,7 +1272,7 @@ function BillModal({
     return {
       pixelRatio: 2.5,
       backgroundColor: '#ffffff',
-      cacheBust: true,
+      cacheBust: false,
       width,
       height,
       canvasWidth: width,
@@ -1474,10 +1483,9 @@ function BillModal({
 
             <div className="receipt-qr-wrap">
               <img
-                src="/qr-payment.jpg"
+                src={QR_PAYMENT_DATA_URL}
                 alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
                 className="receipt-qr-code"
-                crossOrigin="anonymous"
               />
               <div className="receipt-qr-hint">
                 Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
@@ -1648,11 +1656,6 @@ function BillModal({
         >
           <div className="receipt-header">
             <div className="receipt-doc-name">PHIẾU THANH TOÁN</div>
-            {totalSheets > 1 && (
-              <div className="receipt-chunk-badge">
-                PHẦN 1/{totalSheets} (Thanh toán & Chuyển khoản)
-              </div>
-            )}
             {subtitle && <div className="receipt-subtitle">{subtitle}</div>}
             <div className="receipt-meta">Ngày tính: {formatDate(today())}</div>
           </div>
@@ -1707,10 +1710,9 @@ function BillModal({
 
             <div className="receipt-qr-wrap">
               <img
-                src="/qr-payment.jpg"
+                src={QR_PAYMENT_DATA_URL}
                 alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
                 className="receipt-qr-code"
-                crossOrigin="anonymous"
               />
               <div className="receipt-qr-hint">
                 Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
@@ -1718,11 +1720,15 @@ function BillModal({
             </div>
           </div>
 
+          {/* NOTE(VI): Lý do: Đổi footer cuối bill 1 thành "--- PHẦN 1/Y ---" đồng bộ đúng số thứ tự của chính bill
+              Trước: Cuối bill 1 ghi "--- DANH SÁCH KHOẢN CHI XEM TIẾP PHẦN 2 --->"
+              Sau: Cuối bill 1 ghi "--- PHẦN 1/Y ---"
+              Test: Tải ảnh bill -> Bill 1 kết thúc bằng "--- PHẦN 1/Y ---" */}
           {totalSheets > 1 && (
             <>
               <div className="receipt-divider" />
               <div className="receipt-chunk-footer-notice">
-                --- DANH SÁCH KHOẢN CHI XEM TIẾP PHẦN 2 ---&gt;
+                --- PHẦN 1/{totalSheets} ---
               </div>
             </>
           )}
@@ -1814,16 +1820,6 @@ function BillModal({
                 </div>
               ))}
 
-              {/* Phần tiếp theo nếu chưa phải trang cuối */}
-              {!isLast && (
-                <>
-                  <div className="receipt-divider" />
-                  <div className="receipt-chunk-footer-notice">
-                    --- CÒN TIẾP (PHẦN {sheetNum + 1}/{totalSheets}) ---&gt;
-                  </div>
-                </>
-              )}
-
               {/* Trang cuối: Tổng kết tiền + Phần chia từng người */}
               {isLast && (
                 <>
@@ -1855,6 +1851,19 @@ function BillModal({
                         </div>
                       </div>
                     ))}
+                  </div>
+                </>
+              )}
+
+              {/* NOTE(VI): Lý do: Đánh số thứ tự phần x/y đồng bộ cho tất cả các bill ở cuối bill
+                  Trước: Bill sau ghi "còn tiếp (phần x/y)" là chỉ số trang tiếp theo
+                  Sau: Tất cả các bill đều kết thúc bằng "--- PHẦN X/Y ---" chỉ đúng số thứ tự của chính bill đó
+                  Test: Bấm Tải ảnh bill -> Bill 2 là "--- PHẦN 2/5 ---", Bill cuối là "--- PHẦN 5/5 ---" */}
+              {totalSheets > 1 && (
+                <>
+                  <div className="receipt-divider" />
+                  <div className="receipt-chunk-footer-notice">
+                    --- PHẦN {sheetNum}/{totalSheets} ---
                   </div>
                 </>
               )}
