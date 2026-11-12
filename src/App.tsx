@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Download, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, Share2, UserRound,
+  Camera, CircleHelp, Cloud, CloudOff, Copy, DollarSign, Download, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
   Plus, ReceiptText, RefreshCw, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
   Wallet, X,
 } from 'lucide-react'
@@ -1092,13 +1092,10 @@ function BillModal({
   onClose: () => void
   showToast?: (msg: string) => void
 }) {
-  const [copyingImage, setCopyingImage] = useState(false)
-  const [copiedImage, setCopiedImage] = useState(false)
   const [copiedText, setCopiedText] = useState(false)
   const [downloadingChunks, setDownloadingChunks] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState('')
   const [downloadedChunks, setDownloadedChunks] = useState(false)
-  const [chunkModalFiles, setChunkModalFiles] = useState<{ name: string; blob: Blob; file: File; url: string }[] | null>(null)
   const receiptRef = useRef<HTMLDivElement>(null)
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([])
 
@@ -1118,6 +1115,13 @@ function BillModal({
     }
     return chunks
   }, [expenses])
+
+  // NOTE(VI): Lý do: Tách Trang 1 thành riêng trang Thông tin thanh toán (Header + Số tiền cần chuyển + QR code),
+  // các trang tiếp theo chứa danh sách khoản chi (mỗi trang 10 khoản, trang cuối có Tổng tiền + Phân chia).
+  // Trước: Trang 1 nhét cả Thông tin thanh toán lẫn 10 khoản chi đầu tiên
+  // Sau: Trang 1 chỉ gồm đầu bill đến hết "Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh", Trang 2 trở đi là danh sách khoản chi
+  // Test: Bấm "Tải ảnh cắt gọn" -> Trang 1 xuất ra ảnh Thông tin thanh toán & QR, Trang 2 xuất ra 10 khoản chi đầu
+  const totalSheets = expenseChunks.length > 0 ? 1 + expenseChunks.length : 1
 
   const dateGroups = expenses.reduce<{ date: string; expenses: Expense[] }[]>((groups, expense) => {
     const current = groups[groups.length - 1]
@@ -1189,10 +1193,11 @@ function BillModal({
       `----------------------------------------`,
       ...(subtitle ? [`Kỳ: ${subtitle}`] : []),
       `Ngày lập : ${formatDate(today())}`,
+      `Tổng chi : ${money(total)} (${expenses.length} khoản)`,
       `----------------------------------------`,
       `SỐ TIỀN CẦN CHUYỂN:`,
       ...(transferSuggestions.length
-        ? transferSuggestions.map((s) => `• ${s.fromName} trả ${s.toName}: ${money(s.amount)}${s.note ? ` (${s.note})` : ''}`)
+        ? transferSuggestions.map((s) => `• ${s.fromName} chuyển ${s.toName}: ${money(s.amount)}${s.note ? ` (${s.note})` : ''}`)
         : [`• Đã cân bằng số dư (0 đ)`]),
       `----------------------------------------`,
       `THÔNG TIN CHUYỂN KHOẢN:`,
@@ -1270,50 +1275,10 @@ function BillModal({
         width: `${width}px`,
         overflow: 'visible',
         margin: '0',
+        border: 'none',
+        boxShadow: 'none',
+        borderRadius: '0',
       },
-    }
-  }
-
-  async function copyReceiptImage() {
-    const node = receiptRef.current
-    if (!node) return
-    setCopyingImage(true)
-    try {
-      const options = await prepareReceiptRenderOptions(node)
-      let success = false
-      if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
-        try {
-          const blobPromise = toBlob(node, options).then((b) => {
-            if (!b) throw new Error('Không tạo được ảnh')
-            return b
-          })
-          await navigator.clipboard.write([
-            new ClipboardItem({ 'image/png': blobPromise }),
-          ])
-          success = true
-        } catch {
-          const blob = await toBlob(node, options)
-          if (blob) {
-            await navigator.clipboard.write([
-              new ClipboardItem({ 'image/png': blob }),
-            ])
-            success = true
-          }
-        }
-      }
-      if (success) {
-        setCopiedImage(true)
-        showToast?.('Đã sao chép ảnh bill! Bạn có thể dán (Paste) vào Zalo, Messenger.')
-        window.setTimeout(() => setCopiedImage(false), 2500)
-      } else {
-        await copyTextFallback()
-        showToast?.('Thiết bị không hỗ trợ dán ảnh trực tiếp, đã sao chép văn bản bill.')
-      }
-    } catch (err) {
-      console.error('Lỗi khi chép ảnh:', err)
-      await copyTextFallback()
-    } finally {
-      setCopyingImage(false)
     }
   }
 
@@ -1338,22 +1303,21 @@ function BillModal({
   }
 
   // NOTE(VI): Lý do: Khắc phục triệt để lỗi trên iPhone (iOS Safari) chỉ tải được 1 ảnh và văng ra màn hình đen AnyDesk/QuickLook
-  // Trước: Dùng thẻ <a> download cho từng blob URL trong vòng lặp -> iOS Safari điều hướng trang sang trình xem tệp của file 1 và dừng script, 4 file còn lại bị hủy
-  // Sau:
-  //   1. Tích hợp navigator.share: Tự động mở bảng chia sẻ iOS với đủ 5 ảnh -> người dùng bấm "Lưu 5 hình ảnh" hoặc gửi thẳng Zalo
-  //   2. Tích hợp JSZip: Nén trọn bộ thành 1 file ZIP (bill-tron-bo-5-anh.zip) tải 1 chạm cho cả iPhone (vào Tệp) và máy tính PC
-  //   3. Hiển thị modal xem trước và tải từng ảnh/tải ZIP tiện lợi
-  // Test: Trên iPhone mở Safari/Vercel -> Bấm "Tải ảnh cắt gọn" -> Mở ngay bảng chia sẻ iOS chứa cả 5 ảnh, bấm "Lưu 5 hình ảnh" lưu đủ vào Album ảnh máy
+  // Tách Trang 1 thành riêng trang Thông tin thanh toán (Header + Số tiền cần chuyển + QR code),
+  // các trang tiếp theo chứa danh sách khoản chi (mỗi trang 10 khoản, trang cuối có Tổng tiền + Phân chia).
+  // Trước: Trang 1 nhét cả Thông tin thanh toán lẫn 10 khoản chi đầu tiên
+  // Sau: Trang 1 chỉ gồm đầu bill đến hết "Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh", Trang 2 trở đi là danh sách khoản chi
+  // Test: Bấm "Tải ảnh cắt gọn" -> Trang 1 xuất ra ảnh Thông tin thanh toán & QR, Trang 2 xuất ra 10 khoản chi đầu
   async function downloadChunkedImages() {
-    if (!expenses.length || !expenseChunks.length) return
+    if (!expenses.length) return
     setDownloadingChunks(true)
     try {
-      const total = expenseChunks.length
+      const totalSheets = expenseChunks.length > 0 ? 1 + expenseChunks.length : 1
       const generatedFiles: { name: string; blob: Blob; file: File; url: string }[] = []
       const dateStr = today().replace(/-/g, '')
 
-      for (let i = 0; i < total; i++) {
-        setDownloadProgress(`Đang tạo (${i + 1}/${total})...`)
+      for (let i = 0; i < totalSheets; i++) {
+        setDownloadProgress(`Đang tạo (${i + 1}/${totalSheets})...`)
         const node = chunkRefs.current[i]
         if (!node) continue
 
@@ -1361,8 +1325,8 @@ function BillModal({
         const blob = await toBlob(node, options)
         if (!blob) throw new Error(`Không tạo được ảnh phần ${i + 1}`)
 
-        const filename = total > 1
-          ? `bill-${dateStr}-phan-${i + 1}-cua-${total}.png`
+        const filename = totalSheets > 1
+          ? `bill-${dateStr}-phan-${i + 1}-cua-${totalSheets}.png`
           : `bill-${dateStr}.png`
 
         const file = new File([blob], filename, { type: 'image/png' })
@@ -1370,29 +1334,31 @@ function BillModal({
         generatedFiles.push({ name: filename, blob, file, url })
       }
 
-      if (total === 1) {
+      if (totalSheets === 1) {
         const single = generatedFiles[0]
-        if (typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [single.file] })) {
-          try {
-            await navigator.share({
-              files: [single.file],
-              title: 'Phiếu thanh toán',
-            })
-            setDownloadedChunks(true)
-            showToast?.('Đã mở bảng lưu / chia sẻ ảnh bill!')
-            return
-          } catch (e: unknown) {
-            if (e instanceof Error && e.name === 'AbortError') return
+        if (single) {
+          if (typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [single.file] })) {
+            try {
+              await navigator.share({
+                files: [single.file],
+                title: 'Phiếu thanh toán',
+              })
+              setDownloadedChunks(true)
+              showToast?.('Đã mở bảng lưu / chia sẻ ảnh bill!')
+              return
+            } catch (e: unknown) {
+              if (e instanceof Error && e.name === 'AbortError') return
+            }
           }
+          const a = document.createElement('a')
+          a.href = single.url
+          a.download = single.name
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          setDownloadedChunks(true)
+          showToast?.('Đã tải về ảnh bill!')
         }
-        const a = document.createElement('a')
-        a.href = single.url
-        a.download = single.name
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        setDownloadedChunks(true)
-        showToast?.('Đã tải về ảnh bill!')
         return
       }
 
@@ -1403,16 +1369,14 @@ function BillModal({
         try {
           await navigator.share({
             files: filesToShare,
-            title: `Phiếu thanh toán (${total} ảnh)`,
+            title: `Phiếu thanh toán (${totalSheets} ảnh)`,
             text: subtitle || 'Phiếu thanh toán chi tiêu',
           })
           setDownloadedChunks(true)
-          showToast?.(`Đã mở bảng lưu / gửi cả ${total} ảnh bill!`)
-          setChunkModalFiles(generatedFiles)
+          showToast?.(`Đã mở bảng lưu / gửi cả ${totalSheets} ảnh bill!`)
           return
         } catch (err: unknown) {
           if (err instanceof Error && err.name === 'AbortError') {
-            setChunkModalFiles(generatedFiles)
             return
           }
         }
@@ -1425,7 +1389,7 @@ function BillModal({
         zip.file(item.name, item.blob)
       }
       const zipBlob = await zip.generateAsync({ type: 'blob' })
-      const zipFilename = `bill-${dateStr}-tron-bo-${total}-anh.zip`
+      const zipFilename = `bill-${dateStr}-tron-bo-${totalSheets}-anh.zip`
       const zipUrl = URL.createObjectURL(zipBlob)
       const a = document.createElement('a')
       a.href = zipUrl
@@ -1436,8 +1400,7 @@ function BillModal({
       setTimeout(() => URL.revokeObjectURL(zipUrl), 15000)
 
       setDownloadedChunks(true)
-      showToast?.(`Đã tải về file ZIP trọn bộ ${total} ảnh!`)
-      setChunkModalFiles(generatedFiles)
+      showToast?.(`Đã tải về file ZIP trọn bộ ${totalSheets} ảnh!`)
     } catch (err) {
       console.error('Lỗi khi xuất ảnh cắt gọn:', err)
       showToast?.('Không thể xuất ảnh cắt gọn, vui lòng thử lại.')
@@ -1460,6 +1423,23 @@ function BillModal({
 
           <div className="receipt-divider" />
 
+          {/* NOTE(VI): Lý do: Bổ sung thông tin tổng số tiền đã chi tiêu kỳ này vào đầu bill theo yêu cầu người dùng
+              Trước: Đầu bill chỉ có ngày tính rồi đến số tiền cần chuyển, không thấy tổng tiền chi cả kỳ
+              Sau: Thêm khung Tổng chi tiêu kỳ này (số lượng khoản chi + tổng tiền) ngay sau ngày tính
+              Test: Mở bill -> Thấy rõ TỔNG CHI TIÊU KỲ NÀY nổi bật ngay phía trên Số tiền cần chuyển */}
+          <div className="receipt-summary-block">
+            <div className="receipt-summary-line">
+              <span>Số lượng khoản chi:</span>
+              <b>{expenses.length} khoản</b>
+            </div>
+            <div className="receipt-total-line">
+              <span>TỔNG CHI TIÊU KỲ NÀY:</span>
+              <strong className="receipt-grand-total">{money(total)}</strong>
+            </div>
+          </div>
+
+          <div className="receipt-divider light" />
+
           {/* NOTE(VI): Lý do: Thêm mục SỐ TIỀN CẦN CHUYỂN và đưa THÔNG TIN CHUYỂN KHOẢN lên đầu bill theo yêu cầu người dùng
               Trước: Thông tin chuyển khoản nằm ở cuối bill; không có mục gợi ý số tiền cần chuyển ở đầu bill
               Sau: Đưa Số tiền cần chuyển và Thông tin chuyển khoản (kèm QR) lên ngay sau Ngày tính và trước Danh sách khoản chi
@@ -1470,7 +1450,7 @@ function BillModal({
               {transferSuggestions.map((s, idx) => (
                 <div key={idx} className="receipt-transfer-row">
                   <span className="receipt-transfer-names">
-                    • <b>{s.fromName}</b> trả <b>{s.toName}</b>:
+                    • <b>{s.fromName}</b> chuyển <b>{s.toName}</b>:
                     {s.note && <small className="receipt-transfer-note">{s.note}</small>}
                   </span>
                   <strong className="receipt-transfer-amount">{money(s.amount)}</strong>
@@ -1604,36 +1584,17 @@ function BillModal({
         </div>
       </div>
 
-      {/* Cụm nút bấm thao tác trên cùng 1 hàng: Sao chép ảnh bill / Tải ảnh cắt gọn (trắng) / Copy text / Đóng */}
+      {/* NOTE(VI): Lý do: Bỏ nút "Sao chép ảnh bill", đổi nút "Tải ảnh cắt gọn" thành "Tải ảnh bill" màu xanh primary theo yêu cầu người dùng
+          Trước: Có 2 nút tải/sao chép ảnh (Sao chép ảnh bill màu xanh, Tải ảnh cắt gọn màu trắng)
+          Sau: Chỉ còn 1 nút "Tải ảnh bill" màu xanh var(--green) nổi bật làm nút hành động chính, cùng với Copy text và Đóng
+          Test: Mở popup In bill -> Thấy chỉ còn 3 nút, nút Tải ảnh bill màu xanh ở đầu hàng; bấm tải hoạt động chuẩn */}
       <div className="modal-actions bill-actions-row">
         <button
           type="button"
-          className="button primary bill-copy-img-btn"
-          disabled={copyingImage || downloadingChunks || !expenses.length}
-          onClick={() => void copyReceiptImage()}
-          title="Sao chép ảnh hóa đơn độ nét cao vào bộ nhớ tạm để dán vào Zalo/Messenger"
-        >
-          <Camera size={14} />
-          <span>
-            {copyingImage
-              ? 'Đang xuất...'
-              : copiedImage
-              ? 'Đã chép ảnh!'
-              : (
-                <>
-                  <span className="btn-label-desktop">Sao chép ảnh bill</span>
-                  <span className="btn-label-mobile">Chép ảnh</span>
-                </>
-              )}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          className="button secondary bill-download-chunk-btn"
-          disabled={downloadingChunks || copyingImage || !expenses.length}
+          className="button primary bill-download-chunk-btn"
+          disabled={downloadingChunks || !expenses.length}
           onClick={() => void downloadChunkedImages()}
-          title="Tải ảnh bill cắt gọn (mỗi ảnh 10 khoản chi) để gửi lên nhóm chat dễ đọc, không cần zoom"
+          title="Tải ảnh bill về máy để gửi lên nhóm chat hoặc lưu trữ"
         >
           <Download size={14} />
           <span>
@@ -1643,8 +1604,8 @@ function BillModal({
               ? 'Đã tải xong!'
               : (
                 <>
-                  <span className="btn-label-desktop">Tải ảnh cắt gọn</span>
-                  <span className="btn-label-mobile">Tải cắt gọn</span>
+                  <span className="btn-label-desktop">Tải ảnh bill</span>
+                  <span className="btn-label-mobile">Tải ảnh</span>
                 </>
               )}
           </span>
@@ -1678,11 +1639,100 @@ function BillModal({
           zIndex: -999,
         }}
       >
+        {/* TRANG 1: ĐẦU BILL ĐẾN HẾT QUÉT MÃ VIETQR */}
+        <div
+          ref={(el) => {
+            chunkRefs.current[0] = el
+          }}
+          className="thermal-receipt-paper bill-printable bill-chunk-paper"
+        >
+          <div className="receipt-header">
+            <div className="receipt-doc-name">PHIẾU THANH TOÁN</div>
+            {totalSheets > 1 && (
+              <div className="receipt-chunk-badge">
+                PHẦN 1/{totalSheets} (Thanh toán & Chuyển khoản)
+              </div>
+            )}
+            {subtitle && <div className="receipt-subtitle">{subtitle}</div>}
+            <div className="receipt-meta">Ngày tính: {formatDate(today())}</div>
+          </div>
+
+          <div className="receipt-divider" />
+
+          {/* NOTE(VI): Lý do: Bổ sung thông tin tổng số tiền đã chi tiêu kỳ này vào bill đầu theo yêu cầu người dùng
+              Trước: Bill đầu chỉ có ngày tính rồi đến số tiền cần chuyển, không thấy tổng tiền chi cả kỳ
+              Sau: Thêm khung Tổng chi tiêu kỳ này (số lượng khoản chi + tổng tiền) ngay sau ngày tính
+              Test: Bấm Tải ảnh cắt gọn -> Mở ảnh phần 1 -> Thấy TỔNG CHI TIÊU KỲ NÀY hiển thị rõ ràng */}
+          <div className="receipt-summary-block">
+            <div className="receipt-summary-line">
+              <span>Số lượng khoản chi:</span>
+              <b>{expenses.length} khoản</b>
+            </div>
+            <div className="receipt-total-line">
+              <span>TỔNG CHI TIÊU KỲ NÀY:</span>
+              <strong className="receipt-grand-total">{money(total)}</strong>
+            </div>
+          </div>
+
+          <div className="receipt-divider light" />
+
+          {/* SỐ TIỀN CẦN CHUYỂN */}
+          <div className="receipt-section-title">SỐ TIỀN CẦN CHUYỂN</div>
+          {transferSuggestions.length > 0 ? (
+            <div className="receipt-transfer-list">
+              {transferSuggestions.map((s, idx) => (
+                <div key={idx} className="receipt-transfer-row">
+                  <span className="receipt-transfer-names">
+                    • <b>{s.fromName}</b> chuyển <b>{s.toName}</b>:
+                    {s.note && <small className="receipt-transfer-note">{s.note}</small>}
+                  </span>
+                  <strong className="receipt-transfer-amount">{money(s.amount)}</strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="receipt-transfer-empty">Đã cân bằng số dư (0 đ)</div>
+          )}
+
+          <div className="receipt-divider light" />
+
+          {/* THÔNG TIN CHUYỂN KHOẢN */}
+          <div className="receipt-payment-section">
+            <div className="receipt-section-title">THÔNG TIN CHUYỂN KHOẢN</div>
+            <div className="receipt-bank-card">
+              <div>Ngân hàng: <b>TECHCOMBANK</b></div>
+              <div>Chủ tài khoản: <b>LE THI LY THUONG</b></div>
+              <div>Số tài khoản: <b className="receipt-account-number">1903 8123 1750 16</b></div>
+            </div>
+
+            <div className="receipt-qr-wrap">
+              <img
+                src="/qr-payment.jpg"
+                alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
+                className="receipt-qr-code"
+                crossOrigin="anonymous"
+              />
+              <div className="receipt-qr-hint">
+                Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
+              </div>
+            </div>
+          </div>
+
+          {totalSheets > 1 && (
+            <>
+              <div className="receipt-divider" />
+              <div className="receipt-chunk-footer-notice">
+                --- DANH SÁCH KHOẢN CHI XEM TIẾP PHẦN 2 ---&gt;
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* TRANG 2 TRỞ ĐI: CÁC KHOẢN CHI (MỖI TRANG 10 KHOẢN) */}
         {expenseChunks.map((chunkExpenses, cIdx) => {
-          const isFirst = cIdx === 0
+          const sheetIdx = cIdx + 1
+          const sheetNum = cIdx + 2
           const isLast = cIdx === expenseChunks.length - 1
-          const startIdx = cIdx * 10
-          const endIdx = startIdx + chunkExpenses.length
 
           const chunkDateGroups = chunkExpenses.reduce<{ date: string; expenses: Expense[] }[]>((groups, expense) => {
             const current = groups[groups.length - 1]
@@ -1694,79 +1744,17 @@ function BillModal({
           return (
             <div
               key={`chunk-${cIdx}`}
-              ref={(el) => { chunkRefs.current[cIdx] = el }}
+              ref={(el) => {
+                chunkRefs.current[sheetIdx] = el
+              }}
               className="thermal-receipt-paper bill-printable bill-chunk-paper"
             >
-              {/* NOTE(VI): Lý do: Bỏ 3 dòng đầu thông tin phiếu từ tờ thứ 2 đến tờ cuối theo yêu cầu người dùng
-                  Trước: Mọi tờ từ 1 đến cuối đều lặp lại PHIẾU THANH TOÁN, PHẦN X/Y, và Kỳ vừa chốt sổ
-                  Sau: Chỉ tờ 1 (isFirst) mới hiển thị Header, Số tiền cần chuyển và Thông tin chuyển khoản; từ tờ thứ 2 trở đi bắt đầu thẳng vào DANH SÁCH KHOẢN CHI
-                  Test: Bấm Tải ảnh cắt gọn -> Mở ảnh phần 2, phần 3... -> Thấy không còn 3 dòng đầu, bắt đầu ngay từ danh sách khoản chi */}
-              {isFirst && (
-                <>
-                  <div className="receipt-header">
-                    <div className="receipt-doc-name">PHIẾU THANH TOÁN</div>
-                    {expenseChunks.length > 1 && (
-                      <div className="receipt-chunk-badge">
-                        PHẦN 1/{expenseChunks.length} (Khoản 01 - {String(endIdx).padStart(2, '0')})
-                      </div>
-                    )}
-                    {subtitle && (
-                      <div className="receipt-subtitle">{subtitle}</div>
-                    )}
-                    <div className="receipt-meta">Ngày tính: {formatDate(today())}</div>
-                  </div>
-
-                  <div className="receipt-divider" />
-
-                  {/* Mục số tiền cần chuyển (trước thông tin chuyển khoản) */}
-                  <div className="receipt-section-title">SỐ TIỀN CẦN CHUYỂN</div>
-                  {transferSuggestions.length > 0 ? (
-                    <div className="receipt-transfer-list">
-                      {transferSuggestions.map((s, idx) => (
-                        <div key={idx} className="receipt-transfer-row">
-                          <span className="receipt-transfer-names">
-                            • <b>{s.fromName}</b> trả <b>{s.toName}</b>:
-                            {s.note && <small className="receipt-transfer-note">{s.note}</small>}
-                          </span>
-                          <strong className="receipt-transfer-amount">{money(s.amount)}</strong>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="receipt-transfer-empty">Đã cân bằng số dư (0 đ)</div>
-                  )}
-
-                  <div className="receipt-divider light" />
-
-                  {/* Thông tin chuyển khoản & Mã QR (đưa lên đầu bill sau ngày tính) */}
-                  <div className="receipt-payment-section">
-                    <div className="receipt-section-title">THÔNG TIN CHUYỂN KHOẢN</div>
-                    <div className="receipt-bank-card">
-                      <div>Ngân hàng: <b>TECHCOMBANK</b></div>
-                      <div>Chủ tài khoản: <b>LE THI LY THUONG</b></div>
-                      <div>Số tài khoản: <b className="receipt-account-number">1903 8123 1750 16</b></div>
-                    </div>
-
-                    <div className="receipt-qr-wrap">
-                      <img
-                        src="/qr-payment.jpg"
-                        alt="Mã QR Chuyển tiền Techcombank - LE THI LY THUONG"
-                        className="receipt-qr-code"
-                        crossOrigin="anonymous"
-                      />
-                      <div className="receipt-qr-hint">
-                        Quét mã VietQR trên app ngân hàng để chuyển khoản nhanh
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="receipt-divider" />
-                </>
-              )}
-
-              {/* Danh sách khoản chi - Tờ thứ 2 đến cuối bắt đầu ngay tại đây */}
-              <div className="receipt-section-title" style={!isFirst ? { marginTop: 0 } : undefined}>
-                DANH SÁCH KHOẢN CHI {expenseChunks.length > 1 ? `(${startIdx + 1} - ${endIdx})` : ''}
+              {/* NOTE(VI): Lý do: Bỏ phần ngoặc (số thứ tự đầu - số thứ tự cuối) ở đầu danh sách khoản chi các trang 2+ theo yêu cầu người dùng
+                  Trước: Tiêu đề hiển thị "DANH SÁCH KHOẢN CHI (1 - 10) · PHẦN 2/5"
+                  Sau: Tiêu đề chỉ để "DANH SÁCH KHOẢN CHI" gọn gàng chuẩn bill
+                  Test: Bấm Tải ảnh cắt gọn -> Mở ảnh trang 2 trở đi -> Thấy đầu bảng chỉ ghi đúng "DANH SÁCH KHOẢN CHI" */}
+              <div className="receipt-section-title" style={{ marginTop: 0 }}>
+                DANH SÁCH KHOẢN CHI
               </div>
               <div className="receipt-table-header">
                 <span>TÊN KHOẢN CHI</span>
@@ -1829,9 +1817,9 @@ function BillModal({
               {/* Phần tiếp theo nếu chưa phải trang cuối */}
               {!isLast && (
                 <>
-                  <div className="receipt-divider dashed" />
+                  <div className="receipt-divider" />
                   <div className="receipt-chunk-footer-notice">
-                    --- CÒN TIẾP (PHẦN {cIdx + 2}/{expenseChunks.length}) ---&gt;
+                    --- CÒN TIẾP (PHẦN {sheetNum + 1}/{totalSheets}) ---&gt;
                   </div>
                 </>
               )}
@@ -1873,136 +1861,6 @@ function BillModal({
             </div>
           )
         })}
-      </div>
-
-      {chunkModalFiles && (
-        <ChunkResultModal
-          files={chunkModalFiles}
-          onClose={() => setChunkModalFiles(null)}
-          showToast={showToast}
-        />
-      )}
-    </Modal>
-  )
-}
-
-// NOTE(VI): Lý do: Bổ sung Modal hiển thị và quản lý trọn bộ ảnh bill cắt gọn hỗ trợ hoàn hảo trên iPhone (iOS Safari)
-// Trước: Dùng lệnh <a> download từng ảnh -> iOS Safari chỉ tải ảnh 1 và mở màn hình đen AnyDesk, chặn đứng 4 ảnh sau
-// Sau:
-//   - Tự động dùng navigator.share để mở bảng chia sẻ gốc của iOS: Người dùng bấm "Lưu 5 hình ảnh" hoặc chọn Zalo gửi luôn cả 5 ảnh
-//   - Có nút "Tải file ZIP trọn bộ" nén sẵn qua JSZip cho người muốn lưu về Tệp hoặc tải trên PC
-//   - Có ảnh xem trước từng phần kèm nút tải riêng lẻ
-// Test: Bấm "Tải ảnh cắt gọn" trên iPhone -> Bảng chia sẻ iOS mở ra với đủ 5 ảnh, bấm "Lưu 5 hình ảnh" lưu đủ vào Album ảnh máy
-function ChunkResultModal({
-  files,
-  onClose,
-  showToast,
-}: {
-  files: { name: string; blob: Blob; file: File; url: string }[]
-  onClose: () => void
-  showToast?: (msg: string) => void
-}) {
-  const [zipping, setZipping] = useState(false)
-
-  async function shareAll() {
-    if (typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: files.map((f) => f.file) })) {
-      try {
-        await navigator.share({
-          files: files.map((f) => f.file),
-          title: `Phiếu thanh toán (${files.length} ảnh)`,
-        })
-      } catch (e: unknown) {
-        if (e instanceof Error && e.name !== 'AbortError') {
-          showToast?.('Không thể mở bảng chia sẻ')
-        }
-      }
-    } else {
-      showToast?.('Thiết bị không hỗ trợ chia sẻ nhiều ảnh, vui lòng bấm Tải file ZIP.')
-    }
-  }
-
-  async function downloadZip() {
-    setZipping(true)
-    try {
-      const zip = new JSZip()
-      for (const f of files) {
-        zip.file(f.name, f.blob)
-      }
-      const zipBlob = await zip.generateAsync({ type: 'blob' })
-      const dateStr = today().replace(/-/g, '')
-      const zipFilename = `bill-${dateStr}-tron-bo-${files.length}-anh.zip`
-      const url = URL.createObjectURL(zipBlob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = zipFilename
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      setTimeout(() => URL.revokeObjectURL(url), 15000)
-      showToast?.(`Đã tải về file ZIP (${files.length} ảnh)!`)
-    } catch (err) {
-      console.error(err)
-      showToast?.('Lỗi khi nén file ZIP')
-    } finally {
-      setZipping(false)
-    }
-  }
-
-  return (
-    <Modal
-      centered
-      eyebrow="XUẤT ẢNH THÀNH CÔNG"
-      title={`Bộ ảnh bill (${files.length} ảnh)`}
-      subtitle="Đã chia nhỏ 10 khoản/ảnh để gửi nhóm chat xem rõ nét"
-      onClose={onClose}
-    >
-      <div className="chunk-result-content">
-        <div className="chunk-result-actions">
-          {typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: files.map((f) => f.file) }) && (
-            <button
-              type="button"
-              className="button primary full"
-              onClick={() => void shareAll()}
-              style={{ background: 'var(--green)', color: '#fff', height: '42px', fontSize: '13px', fontWeight: 700 }}
-            >
-              <Share2 size={16} /> Lưu vào Thư viện ảnh / Gửi Zalo (Cả {files.length} ảnh)
-            </button>
-          )}
-
-          <button
-            type="button"
-            className="button secondary full"
-            disabled={zipping}
-            onClick={() => void downloadZip()}
-            style={{ height: '40px', fontSize: '12.5px', fontWeight: 600 }}
-          >
-            <Download size={15} /> {zipping ? 'Đang nén...' : `Tải file ZIP trọn bộ (${files.length} ảnh)`}
-          </button>
-        </div>
-
-        <div className="chunk-result-grid">
-          {files.map((f, idx) => (
-            <div key={idx} className="chunk-result-card">
-              <div className="chunk-result-header">
-                <strong>Phần {idx + 1}/{files.length}</strong>
-                <a
-                  href={f.url}
-                  download={f.name}
-                  className="chunk-download-link"
-                  title="Tải ảnh này về máy"
-                >
-                  <Download size={13} /> Tải ảnh
-                </a>
-              </div>
-              <img src={f.url} alt={f.name} className="chunk-result-preview-img" />
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="modal-actions" style={{ marginTop: '12px' }}>
-        <button type="button" className="button secondary full" onClick={onClose}>
-          Đóng
-        </button>
       </div>
     </Modal>
   )
@@ -2111,7 +1969,7 @@ function SettlementSuggestionsPanel({
         const to = members.find((m) => m.id === s.toMemberId)?.name ?? 'Thành viên'
         const breakdown = getMemberDebtBreakdown(ledger, s.fromMemberId)
         const noteStr = breakdown.note ? ` (${breakdown.note})` : ''
-        return `${from} trả ${to}: ${money(s.amount)}${noteStr}`
+        return `${from} chuyển ${to}: ${money(s.amount)}${noteStr}`
       })
       .join('\n')
   }, [suggestions, members, ledger])
@@ -2163,12 +2021,24 @@ function SettlementSuggestionsPanel({
         <div className="suggestion-people">
           <MemberAvatar member={from} index={members.indexOf(from)} />
           <span className="suggestion-name">{from.name}</span>
-          <span className="suggestion-verb">trả</span>
+          <span className="suggestion-verb">chuyển</span>
           <MemberAvatar member={to} index={members.indexOf(to)} />
           <span className="suggestion-name">{to.name}</span>
         </div>
         <strong>{money(suggestion.amount)}</strong>
-        <button className="button small-button" onClick={() => onRecord(from.id, to.id, suggestion.amount)}><Check size={14} /> Đã trả</button>
+        {/* NOTE(VI): Lý do: Bỏ chữ "Đã trả", chỉ để dấu check ✓ theo yêu cầu người dùng
+            Trước: Nút gồm icon Check + chữ "Đã trả", chiếm nhiều diện tích khiến tên thành viên bị co ngắn (Th..., Thư...)
+            Sau: Nút chỉ còn dấu check ✓ gọn gàng, tăng không gian hiển thị tên thành viên
+            Test: Xem bảng Gợi ý chuyển tiền -> Tên hiển thị đầy đủ hơn, nút xác nhận là icon check ✓ gọn đẹp */}
+        <button
+          type="button"
+          className="button small-button suggestion-check-btn"
+          onClick={() => onRecord(from.id, to.id, suggestion.amount)}
+          title="Xác nhận đã chuyển"
+          aria-label={`Xác nhận ${from.name} đã chuyển cho ${to.name}`}
+        >
+          <Check size={15} strokeWidth={2.4} />
+        </button>
         {breakdown.note && <div className="suggestion-debt-note">{breakdown.note}</div>}
       </div>
     })}</div> : <div className="empty-state compact"><div className="empty-icon"><Check size={20} /></div><strong>Sổ đang cân bằng</strong><p>Không còn khoản nào cần chốt sổ.</p></div>}
