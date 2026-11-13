@@ -137,6 +137,7 @@ export default function App() {
   const [cachedMonthlyTotals, setCachedMonthlyTotals] = useState<Record<string, number> | null>(null)
   const computedMonthlyTotals = useMemo(() => ledger ? sumExpenseMonths(ledger.expenses) : {}, [ledger?.expenses])
   const [modal, setModal] = useState<'expense' | 'confirm_settlement' | null>(null)
+  const [showCreateLedgerModal, setShowCreateLedgerModal] = useState(false)
   const [showSettlementSection, setShowSettlementSection] = useState(false)
   const [showSettlementHistoryModal, setShowSettlementHistoryModal] = useState(false)
   const [pendingSettlement, setPendingSettlement] = useState<{ fromMemberId: string; toMemberId: string; amount: number; periodId: string } | null>(null)
@@ -258,8 +259,29 @@ export default function App() {
           setUserLedgers(list)
         } catch {}
 
-        let remote = await fetchCloudLedger(targetId)
-        if (!remote?.id && targetId) {
+        // NOTE(VI): Lý do: Tự động hiển thị nhóm được mời lên trước cho tài khoản chưa tạo nhóm theo yêu cầu người dùng
+        // Trước: Khi tài khoản chưa tạo nhóm, targetId rỗng hoặc chưa chọn sổ thì fetchCloudLedger(undefined) bị lỗi "no ledger", app hiển thị form tạo nhóm dù đã được add vào nhóm khác
+        // Sau: Nếu tài khoản chưa tạo nhóm cá nhân (!hasOwned) và có nhóm được mời (invitedList.length > 0):
+        //      - Nếu chưa có targetId, hoặc targetId là 'uncreated-personal-ledger', hoặc targetId không có trong list -> tự động chọn nhóm được mời đầu tiên
+        //      - Khi người dùng chủ động đổi sổ khác trong popup Tài khoản thì lưu vào localStorage và giữ nguyên sổ đó cho đến khi đổi tiếp
+        // Test: Tài khoản mới chưa tạo nhóm nhưng được nick khác add vào nhóm -> vừa vào app tự động mở ngay nhóm được mời; nếu có nhiều nhóm được mời thì đổi trong Tài khoản và nhớ lựa chọn
+        const hasOwned = list.some((l) => l.isOwner)
+        const invitedList = list.filter((l) => !l.isOwner)
+        if (!hasOwned && invitedList.length > 0) {
+          const validTarget = targetId && list.some((l) => l.id === targetId && l.id !== 'uncreated-personal-ledger')
+          if (!validTarget) {
+            targetId = invitedList[0].id
+            try { localStorage.setItem('chia-tien-active-ledger-id', targetId) } catch {}
+          }
+        }
+
+        let remote: Ledger | null = null
+        if (targetId && targetId !== 'uncreated-personal-ledger') {
+          remote = await fetchCloudLedger(targetId)
+        } else if (!targetId) {
+          remote = await fetchCloudLedger(undefined)
+        }
+        if (!remote?.id && targetId && targetId !== 'uncreated-personal-ledger') {
           try { localStorage.removeItem('chia-tien-active-ledger-id') } catch {}
           remote = await fetchCloudLedger(undefined)
         }
@@ -283,9 +305,31 @@ export default function App() {
             } catch {}
           }
         }
-        if (!remote?.id) setNeedsSetup(true)
-        else {
+
+        const isSkippedSetup = typeof window !== 'undefined' && localStorage.getItem('chia-tien-skipped-setup') === 'true'
+
+        if (!remote?.id) {
+          if (isSkippedSetup && !hasOwned) {
+            const placeholder: Ledger = {
+              id: 'uncreated-personal-ledger',
+              name: 'Sổ chi tiêu',
+              members: [],
+              periods: [{ id: makeId(), startDate: today(), endDate: null, status: 'open', settledAt: null }],
+              expenses: [],
+              settlements: [],
+              isOwner: true,
+            }
+            setLedger(placeholder)
+            setActiveLedgerId('uncreated-personal-ledger')
+            setNeedsSetup(false)
+          } else {
+            setNeedsSetup(true)
+          }
+        } else {
           try {
+            if (remote.isOwner !== false) {
+              localStorage.removeItem('chia-tien-skipped-setup')
+            }
             localStorage.setItem('chia-tien-active-ledger-id', remote.id)
             setActiveLedgerId(remote.id)
           } catch {}
@@ -303,8 +347,25 @@ export default function App() {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : (error as any)?.message || ''
-        if (message.toLowerCase().includes('no ledger') || message.toLowerCase().includes('not found')) setNeedsSetup(true)
-        else {
+        const isSkippedSetup = typeof window !== 'undefined' && localStorage.getItem('chia-tien-skipped-setup') === 'true'
+        if (message.toLowerCase().includes('no ledger') || message.toLowerCase().includes('not found')) {
+          if (isSkippedSetup) {
+            const placeholder: Ledger = {
+              id: 'uncreated-personal-ledger',
+              name: 'Sổ chi tiêu',
+              members: [],
+              periods: [{ id: makeId(), startDate: today(), endDate: null, status: 'open', settledAt: null }],
+              expenses: [],
+              settlements: [],
+              isOwner: true,
+            }
+            setLedger(placeholder)
+            setActiveLedgerId('uncreated-personal-ledger')
+            setNeedsSetup(false)
+          } else {
+            setNeedsSetup(true)
+          }
+        } else {
           setSyncNotice(message ? `Không tải được dữ liệu: ${message}` : 'Không tải được dữ liệu mới. Đang hiển thị bản lưu trên thiết bị.')
           const savedFallback = await readLedger()
           if (!savedFallback) {
@@ -390,6 +451,10 @@ export default function App() {
       } else if (!navigator.onLine && event !== 'SIGNED_OUT') {
         void tryRestoreOfflineSession()
       } else {
+        try {
+          localStorage.removeItem('chia-tien-skipped-setup')
+          localStorage.removeItem('chia-tien-active-ledger-id')
+        } catch {}
         setUserEmail('')
         setSession(false)
         setSessionReady(true)
@@ -536,9 +601,62 @@ export default function App() {
     if (names.some((name) => !name)) return
     try {
       const created = normalizeLedger(await initializeCloudLedger(String(form.get('name') ?? 'Sổ chi tiêu'), names))
+      try {
+        localStorage.removeItem('chia-tien-skipped-setup')
+        localStorage.setItem('chia-tien-active-ledger-id', created.id)
+        setActiveLedgerId(created.id)
+        const list = await fetchUserLedgers()
+        setUserLedgers(list)
+      } catch {}
       setLedger(created); await writeLedger(created); setNeedsSetup(false)
       await refreshMonthlyTotals()
     } catch (error) { setAuthError(error instanceof Error ? error.message : 'Không tạo được sổ.') }
+  }
+
+  // NOTE(VI): Lý do: Bổ sung chức năng "Thiết lập nhóm sau" để người dùng có thể bỏ qua form tạo nhóm khi vừa tạo tài khoản và đi vào giao diện app ngay
+  // Trước: Bắt buộc người dùng phải điền tên sổ và 4 thành viên mới được vào app
+  // Sau: Thêm nút "Thiết lập nhóm sau", lưu trạng thái bỏ qua vào localStorage; nếu đã có sổ được mời thì tự động mở sổ đó, nếu chưa thì hiển thị giao diện sổ chi tiêu (chưa tạo)
+  // Test: Tạo nick mới -> Ở form Bắt đầu sổ mới, bấm "Thiết lập nhóm sau" -> Vào thẳng giao diện app; vào Tài khoản vẫn thấy dòng Sổ chi tiêu (chưa tạo) để tạo sau
+  async function handleSkipSetup() {
+    try {
+      localStorage.setItem('chia-tien-skipped-setup', 'true')
+    } catch {}
+
+    let list: LedgerListItem[] = []
+    try {
+      list = await fetchUserLedgers()
+      setUserLedgers(list)
+    } catch {}
+
+    const invited = list.find((l) => !l.isOwner)
+    if (invited) {
+      try {
+        localStorage.setItem('chia-tien-active-ledger-id', invited.id)
+        setActiveLedgerId(invited.id)
+        const remote = await fetchCloudLedger(invited.id)
+        if (remote?.id) {
+          const normalized = normalizeLedger(remote)
+          setLedger(normalized)
+          await writeLedger(normalized)
+          setNeedsSetup(false)
+          await refreshMonthlyTotals()
+          return
+        }
+      } catch {}
+    }
+
+    const placeholder: Ledger = {
+      id: 'uncreated-personal-ledger',
+      name: 'Sổ chi tiêu',
+      members: [],
+      periods: [{ id: makeId(), startDate: today(), endDate: null, status: 'open', settledAt: null }],
+      expenses: [],
+      settlements: [],
+      isOwner: true,
+    }
+    setLedger(placeholder)
+    setActiveLedgerId('uncreated-personal-ledger')
+    setNeedsSetup(false)
   }
 
   if (isCloudConfigured && !sessionReady) return <div className="loading-screen"><div className="brand-mark"><Wallet /></div><p>Đang mở sổ chi tiêu...</p></div>
@@ -555,7 +673,7 @@ export default function App() {
   // Sau: Icon Wallet to 46px, nét vẽ màu xanh var(--green), không có nền vuông
   // Test: Tạo tài khoản mới hoặc vào màn hình Bắt đầu sổ mới -> Thấy icon ví nét vẽ xanh to rõ ràng, không có ô vuông nền
   if (needsSetup && isCloudConfigured) return <div className="auth-screen"><div className="auth-card setup-card"><div style={{ display: 'grid', placeItems: 'center', margin: '0 auto 16px', color: 'var(--green, #257b5c)' }}><Wallet size={46} strokeWidth={2} /></div><span className="eyebrow">BẮT ĐẦU SỔ MỚI</span><h1>Nhóm mình có những ai?</h1><p>Đặt tên sổ và điền tên bốn thành viên. Bạn có thể đổi tên sau.</p>
-    <form onSubmit={(event) => void createLedger(event)} className="auth-form"><label>Tên sổ<input name="name" defaultValue="Sổ chi tiêu" required /></label><div className="member-input-grid">{['Thành viên 1', 'Thành viên 2', 'Thành viên 3', 'Thành viên 4'].map((label, i) => <label key={label}>{label}<input name={`member${i + 1}`} placeholder={['Linh', 'Minh', 'Anh', 'Huy'][i]} required /></label>)}</div>{authError && <div className="form-error">{authError}</div>}<button className="button primary full">Tạo sổ chi tiêu</button></form>
+    <form onSubmit={(event) => void createLedger(event)} className="auth-form"><label>Tên sổ<input name="name" defaultValue="Sổ chi tiêu" required /></label><div className="member-input-grid">{['Thành viên 1', 'Thành viên 2', 'Thành viên 3', 'Thành viên 4'].map((label, i) => <label key={label}>{label}<input name={`member${i + 1}`} placeholder={['Linh', 'Minh', 'Anh', 'Huy'][i]} required /></label>)}</div>{authError && <div className="form-error">{authError}</div>}<button className="button primary full">Tạo sổ chi tiêu</button><button type="button" className="button secondary full" onClick={() => void handleSkipSetup()}>Thiết lập nhóm sau</button></form>
   </div></div>
   if (!ledger) return <div className="loading-screen"><p>Đang chuẩn bị sổ chi tiêu...</p></div>
 
@@ -897,12 +1015,12 @@ export default function App() {
       <div className="brand"><div className="brand-mark"><Wallet /></div><div><strong>chia tiền</strong><span>đi chơi cùng nhau</span></div></div>
       <div
         className="trip-selector"
-        onClick={() => { if (userLedgers.length > 1) setShowAccount(true) }}
-        style={{ cursor: userLedgers.length > 1 ? 'pointer' : 'default' }}
+        onClick={() => { if (userLedgers.length > 1 || ledger.id === 'uncreated-personal-ledger') setShowAccount(true) }}
+        style={{ cursor: (userLedgers.length > 1 || ledger.id === 'uncreated-personal-ledger') ? 'pointer' : 'default' }}
       >
-        <div className="trip-icon">{ledger.isOwner === false ? '👥' : '✳'}</div>
+        <div className="trip-icon">{ledger.id === 'uncreated-personal-ledger' ? '✳' : ledger.isOwner === false ? '👥' : '✳'}</div>
         <div className="trip-copy">
-          <span>{ledger.isOwner === false ? 'SỔ ĐƯỢC MỜI' : 'SỔ CHI TIÊU'}</span>
+          <span>{ledger.id === 'uncreated-personal-ledger' ? 'CHƯA TẠO SỔ' : ledger.isOwner === false ? 'SỔ ĐƯỢC MỜI' : 'SỔ CHI TIÊU'}</span>
           <strong>{ledger.name}</strong>
         </div>
         {userLedgers.length > 1 && <ChevronDown size={15} />}
@@ -919,9 +1037,9 @@ export default function App() {
             Test: Mở sổ được mời -> Thấy nhãn 👥 Được mời kèm tên thành viên của mình */}
         <div
           className="app-wordmark"
-          onClick={() => { if (userLedgers.length > 1) setShowAccount(true) }}
-          style={{ cursor: userLedgers.length > 1 ? 'pointer' : 'default' }}
-          title={userLedgers.length > 1 ? 'Bấm để đổi sổ chi tiêu' : undefined}
+          onClick={() => { if (userLedgers.length > 1 || ledger.id === 'uncreated-personal-ledger') setShowAccount(true) }}
+          style={{ cursor: (userLedgers.length > 1 || ledger.id === 'uncreated-personal-ledger') ? 'pointer' : 'default' }}
+          title={userLedgers.length > 1 ? 'Bấm để đổi sổ chi tiêu' : ledger.id === 'uncreated-personal-ledger' ? 'Bấm để tạo sổ chi tiêu' : undefined}
         >
           <span className="wordmark-icon"><Wallet size={18} /></span>
           {/* NOTE(VI): Lý do: Bỏ nút cây bút đổi tên sổ ở tiêu đề app theo yêu cầu người dùng, việc đổi tên thực hiện bên trong mục Tài khoản
@@ -933,7 +1051,11 @@ export default function App() {
               <strong>{ledger.name || 'Sổ chi tiêu'}</strong>
               {userLedgers.length > 1 && <ChevronDown size={13} style={{ color: '#287b5d' }} />}
             </div>
-            {ledger.isOwner === false && (
+            {ledger.id === 'uncreated-personal-ledger' ? (
+              <span style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 600 }}>
+                Chưa tạo nhóm
+              </span>
+            ) : ledger.isOwner === false && (
               <span style={{ fontSize: '10px', color: '#166534', fontWeight: 600 }}>
                 👥 Được mời {ledger.currentUserEmail ? `(${ledger.members.find(m => m.id === ledger.currentMemberId)?.name || ledger.currentUserEmail})` : ''}
               </span>
@@ -971,9 +1093,9 @@ export default function App() {
               Test: Đăng nhập tài khoản được mời -> Thấy khung Kỳ hiện tại là chữ tĩnh, không có nút Chốt sổ, bấm vào không có phản hồi */}
           <section
             className="panel period-accordion-panel"
-            style={{ cursor: ledger.isOwner !== false ? 'pointer' : 'default' }}
+            style={{ cursor: (ledger.isOwner !== false && ledger.id !== 'uncreated-personal-ledger') ? 'pointer' : 'default' }}
             onClick={() => {
-              if (ledger.isOwner === false) return
+              if (ledger.isOwner === false || ledger.id === 'uncreated-personal-ledger') return
               setShowSettlementSection((open) => {
                 const next = !open
                 if (next && isCloudConfigured && isOnline) {
@@ -988,7 +1110,7 @@ export default function App() {
                 <h2>Kỳ chi tiêu hiện tại</h2>
                 <span>Từ ngày <b>{selectedPeriod ? formatDate(selectedPeriod.startDate) : '—'}</b> đến nay</span>
               </div>
-              {ledger.isOwner !== false && (
+              {ledger.isOwner !== false && ledger.id !== 'uncreated-personal-ledger' && (
                 <div className="period-accordion-action" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <button
                     type="button"
@@ -1009,7 +1131,7 @@ export default function App() {
               )}
             </div>
 
-            {ledger.isOwner !== false && showSettlementSection && (
+            {ledger.isOwner !== false && ledger.id !== 'uncreated-personal-ledger' && showSettlementSection && (
               <div className="settlement-expanded-container">
                 {/* 1. Thông báo & nút chốt sổ */}
                 <div
@@ -1196,6 +1318,7 @@ export default function App() {
         await writeLedger(created)
         await refreshMonthlyTotals()
         try {
+          localStorage.removeItem('chia-tien-skipped-setup')
           localStorage.setItem('chia-tien-active-ledger-id', created.id)
           setActiveLedgerId(created.id)
           const list = await fetchUserLedgers()
@@ -1204,11 +1327,39 @@ export default function App() {
         showToast('Đã tạo sổ chi tiêu cá nhân thành công!')
       }}
       onLogout={() => {
-        try { localStorage.removeItem('chia-tien-offline-email') } catch {}
+        try {
+          localStorage.removeItem('chia-tien-offline-email')
+          localStorage.removeItem('chia-tien-skipped-setup')
+          localStorage.removeItem('chia-tien-active-ledger-id')
+        } catch {}
         setShowAccount(false)
         void signOut()
       }}
     />}
+    {/* NOTE(VI): Lý do: Bấm '+ Thêm khoản chi' khi tài khoản chưa có nhóm thì mở thẳng form 'Bắt đầu sổ mới' theo yêu cầu người dùng
+        Trước: Hiện toast thông báo và mở popup Tài khoản
+        Sau: Mở trực tiếp form Bắt đầu sổ mới; điền tên nhóm và 4 thành viên xong là tạo sổ và sẵn sàng sử dụng
+        Test: Bấm '+ Thêm khoản chi' khi chưa có nhóm -> Hiện ngay form Bắt đầu sổ mới */}
+    {showCreateLedgerModal && (
+      <CreatePersonalLedgerModal
+        onClose={() => setShowCreateLedgerModal(false)}
+        onCreate={async (name, memberNames) => {
+          const created = normalizeLedger(await initializeCloudLedger(name, memberNames))
+          setLedger(created)
+          await writeLedger(created)
+          await refreshMonthlyTotals()
+          try {
+            localStorage.removeItem('chia-tien-skipped-setup')
+            localStorage.setItem('chia-tien-active-ledger-id', created.id)
+            setActiveLedgerId(created.id)
+            const list = await fetchUserLedgers()
+            setUserLedgers(list)
+          } catch {}
+          setShowCreateLedgerModal(false)
+          showToast('Đã tạo sổ chi tiêu cá nhân thành công!')
+        }}
+      />
+    )}
     {showSettlementHistoryModal && (
       <SettlementHistoryModal
         members={ledger.members}
@@ -1246,6 +1397,10 @@ export default function App() {
       aria-label="Thêm khoản chi"
       title="Thêm khoản chi"
       onClick={() => {
+        if (ledger.id === 'uncreated-personal-ledger' || ledger.members.length === 0) {
+          setShowCreateLedgerModal(true)
+          return
+        }
         setEditing(null)
         setModal('expense')
       }}
@@ -1744,8 +1899,12 @@ function BillModal({
     }
   }
 
+  // NOTE(VI): Lý do: Bỏ khung tiêu đề bên ngoài (modal-heading) của popup in bill theo yêu cầu người dùng vì nội dung PHIẾU THANH TOÁN, Hóa đơn chi tiêu, Kỳ hiện tại đã có đầy đủ ngay trên bill
+  // Trước: Có modal-heading hiển thị thêm 1 lần "PHIẾU THANH TOÁN", "Hóa đơn chi tiêu", "Kỳ hiện tại..." và lồng bill trong khung xám gây thừa thãi
+  // Sau: Ẩn modal-heading (hideHeader), bỏ khung lồng ngoài, hiển thị trực tiếp duy nhất cái bill ở trên và 3 nút hành động ở dưới
+  // Test: Bấm "In bill" -> Popup hiển thị trực tiếp tờ bill sạch sẽ tinh tế, ngay dưới là 3 nút Tải ảnh bill, Copy text, Đóng
   return (
-    <Modal centered wide className="bill-modal" eyebrow="PHIẾU THANH TOÁN" title="Hóa đơn chi tiêu" subtitle={subtitle} onClose={onClose}>
+    <Modal centered wide className="bill-modal" hideHeader title="" subtitle="" onClose={onClose}>
       <div className="bill-preview-wrapper">
         <div ref={receiptRef} className="thermal-receipt-paper bill-printable">
           {/* Header phong cách bill siêu thị / in nhiệt - Đã bỏ SỔ CHI TIÊU NHÓM và Tên nhóm */}
@@ -2688,6 +2847,98 @@ function SettlementHistoryModal({
   )
 }
 
+// NOTE(VI): Lý do: Modal form Bắt đầu sổ mới dùng chung khi người dùng bấm + Thêm khoản chi (lúc chưa có nhóm) hoặc bấm + Tạo sổ trong popup Tài khoản
+// Trước: Code form bị lặp lại trong popup Tài khoản, khi click + Thêm khoản chi thì chỉ hiện toast và mở popup Tài khoản
+// Sau: Tách thành component dùng chung CreatePersonalLedgerModal, mở trực tiếp từ cả 2 nơi (nút + Thêm khoản chi và popup Tài khoản)
+// Test: Bấm + Thêm khoản chi khi chưa tạo nhóm -> Mở ngay form Bắt đầu sổ mới; Bấm + Tạo sổ trong popup Tài khoản -> cũng mở form này
+function CreatePersonalLedgerModal({
+  onClose,
+  onCreate,
+}: {
+  onClose: () => void
+  onCreate: (name: string, memberNames: string[]) => Promise<void>
+}) {
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState('')
+
+  return (
+    <div
+      className="avatar-lightbox-backdrop"
+      style={{ zIndex: 10000 }}
+      onClick={() => {
+        if (!creating) onClose()
+      }}
+    >
+      <div
+        className="auth-card setup-card"
+        style={{ margin: 0, width: 'min(100%, 420px)', maxHeight: '92vh', overflowY: 'auto', position: 'relative' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'grid', placeItems: 'center', margin: '0 auto 16px', color: 'var(--green, #257b5c)' }}>
+          <Wallet size={46} strokeWidth={2} />
+        </div>
+        <span className="eyebrow" style={{ display: 'block', textAlign: 'center' }}>BẮT ĐẦU SỔ MỚI</span>
+        <h1>Nhóm mình có những ai?</h1>
+        <p>Đặt tên sổ và điền tên bốn thành viên. Bạn có thể đổi tên sau.</p>
+        <form
+          onSubmit={async (event) => {
+            event.preventDefault()
+            const form = new FormData(event.currentTarget)
+            const sName = String(form.get('name') ?? 'Sổ chi tiêu').trim() || 'Sổ chi tiêu'
+            const names = [1, 2, 3, 4].map((i) => String(form.get(`member${i}`) ?? '').trim())
+            if (names.some((name) => !name)) {
+              setError('Vui lòng điền đủ tên 4 thành viên.')
+              return
+            }
+            setCreating(true)
+            setError('')
+            try {
+              await onCreate(sName, names)
+            } catch (err: any) {
+              setError(err?.message || 'Không tạo được sổ chi tiêu.')
+              setCreating(false)
+            }
+          }}
+          className="auth-form"
+        >
+          <label>
+            Tên sổ
+            <input name="name" defaultValue="Sổ chi tiêu" required />
+          </label>
+          <div className="member-input-grid">
+            {['Thành viên 1', 'Thành viên 2', 'Thành viên 3', 'Thành viên 4'].map((label, i) => (
+              <label key={label}>
+                {label}
+                <input name={`member${i + 1}`} placeholder={['Linh', 'Minh', 'Anh', 'Huy'][i]} required />
+              </label>
+            ))}
+          </div>
+          {error && <div className="form-error">{error}</div>}
+          <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
+            <button
+              type="button"
+              className="button secondary"
+              style={{ flex: 1, height: '40px', fontSize: '13px' }}
+              disabled={creating}
+              onClick={onClose}
+            >
+              Hủy
+            </button>
+            <button
+              type="submit"
+              className="button primary"
+              style={{ flex: 2, height: '40px', fontSize: '13px' }}
+              disabled={creating}
+            >
+              {creating ? 'Đang tạo...' : 'Tạo sổ chi tiêu'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function AccountModal({
   email,
   cloudEnabled,
@@ -2730,8 +2981,6 @@ function AccountModal({
   const activeMembers = members.filter((member) => member.active)
   const hasOwnedLedger = userLedgers.some((l) => l.isOwner)
   const [showCreatePersonalForm, setShowCreatePersonalForm] = useState(false)
-  const [creatingPersonal, setCreatingPersonal] = useState(false)
-  const [createPersonalError, setCreatePersonalError] = useState('')
   const [editingLedgerId, setEditingLedgerId] = useState<string | null>(focusRename ? (activeLedgerId || 'current') : null)
   const [tempGroupName, setTempGroupName] = useState(groupName)
   const [savingGroupName, setSavingGroupName] = useState(false)
@@ -2978,22 +3227,6 @@ function AccountModal({
                 >
                   {member.name}
                 </span>
-                {member.email && (
-                  <span
-                    style={{
-                      fontSize: '11px',
-                      color: '#166534',
-                      background: '#dcfce7',
-                      padding: '1px 6px',
-                      borderRadius: '4px',
-                      marginLeft: '4px',
-                      fontWeight: 500,
-                    }}
-                    title={`Đã gắn tài khoản: ${member.email}`}
-                  >
-                    🔗 {member.email}
-                  </span>
-                )}
               </div>
             )
           })}
@@ -3057,10 +3290,16 @@ function AccountModal({
     {(() => {
       const displayLedgers: LedgerListItem[] = userLedgers.length > 0
         ? userLedgers
-        : [{ id: activeLedgerId || 'current', name: groupName, isOwner: isOwner }]
+        : (activeLedgerId && activeLedgerId !== 'uncreated-personal-ledger'
+            ? [{ id: activeLedgerId || 'current', name: groupName, isOwner: isOwner }]
+            : [])
       return (
         <section className="account-group-info" style={{ marginTop: '12px', borderTop: '1px solid #e5e7eb', paddingTop: '12px' }}>
-          <div className="account-group-heading"><span>Sổ chi tiêu của người dùng ({displayLedgers.length})</span></div>
+          {/* NOTE(VI): Lý do: Đổi tiêu đề 'Sổ chi tiêu của người dùng' thành 'Danh sách sổ chi tiêu' theo yêu cầu người dùng
+              Trước: <span>Sổ chi tiêu của người dùng ({count})</span>
+              Sau: <span>Danh sách sổ chi tiêu ({count})</span>
+              Test: Mở popup Tài khoản -> Thấy tiêu đề mục sổ là 'Danh sách sổ chi tiêu (1)' */}
+          <div className="account-group-heading"><span>Danh sách sổ chi tiêu ({displayLedgers.length > 0 ? displayLedgers.length : 1})</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
             {displayLedgers.map((l) => {
               const isActive = (l.id === activeLedgerId) || (displayLedgers.length === 1)
@@ -3219,7 +3458,6 @@ function AccountModal({
             {!hasOwnedLedger && onCreatePersonalLedger && (
               <div
                 onClick={() => {
-                  setCreatePersonalError('')
                   setShowCreatePersonalForm(true)
                 }}
                 style={{
@@ -3257,7 +3495,6 @@ function AccountModal({
                   style={{ height: '28px', fontSize: '12px', padding: '0 10px', whiteSpace: 'nowrap' }}
                   onClick={(e) => {
                     e.stopPropagation()
-                    setCreatePersonalError('')
                     setShowCreatePersonalForm(true)
                   }}
                 >
@@ -3356,85 +3593,14 @@ function AccountModal({
         Sau: Mở popup form Bắt đầu sổ mới (giống hệt màn hình khởi tạo lúc đăng ký), có nút Hủy và Tạo sổ chi tiêu
         Test: Bấm '+ Tạo sổ' trong danh sách sổ -> Hiện form Bắt đầu sổ mới -> Nhập tên 4 thành viên -> Bấm Tạo -> Sổ cá nhân được tạo và chuyển sang ngay */}
     {showCreatePersonalForm && (
-      <div
-        className="avatar-lightbox-backdrop"
-        style={{ zIndex: 10000 }}
-        onClick={() => setShowCreatePersonalForm(false)}
-      >
-        <div
-          className="auth-card setup-card"
-          style={{ margin: 0, width: 'min(100%, 420px)', maxHeight: '92vh', overflowY: 'auto', position: 'relative' }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {/* NOTE(VI): Lý do: Bỏ nền vuông màu xanh, icon ví phóng to nét vẽ màu xanh theo yêu cầu người dùng
-              Trước: <div className="brand-mark" style={{ margin: '0 auto 16px' }}><Wallet /></div>
-              Sau: Icon Wallet to 46px, nét vẽ màu xanh var(--green), không có nền vuông
-              Test: Bấm '+ Tạo sổ' trong popup tài khoản -> Thấy icon ví nét vẽ xanh to rõ ràng, không có ô vuông nền */}
-          <div style={{ display: 'grid', placeItems: 'center', margin: '0 auto 16px', color: 'var(--green, #257b5c)' }}>
-            <Wallet size={46} strokeWidth={2} />
-          </div>
-          <span className="eyebrow" style={{ display: 'block', textAlign: 'center' }}>BẮT ĐẦU SỔ MỚI</span>
-          <h1>Nhóm mình có những ai?</h1>
-          <p>Đặt tên sổ và điền tên bốn thành viên. Bạn có thể đổi tên sau.</p>
-          <form
-            onSubmit={async (event) => {
-              event.preventDefault()
-              if (!onCreatePersonalLedger) return
-              const form = new FormData(event.currentTarget)
-              const sName = String(form.get('name') ?? 'Sổ chi tiêu').trim() || 'Sổ chi tiêu'
-              const names = [1, 2, 3, 4].map((i) => String(form.get(`member${i}`) ?? '').trim())
-              if (names.some((name) => !name)) {
-                setCreatePersonalError('Vui lòng điền đủ tên 4 thành viên.')
-                return
-              }
-              setCreatingPersonal(true)
-              setCreatePersonalError('')
-              try {
-                await onCreatePersonalLedger(sName, names)
-                setShowCreatePersonalForm(false)
-              } catch (err: any) {
-                setCreatePersonalError(err?.message || 'Không tạo được sổ chi tiêu.')
-              } finally {
-                setCreatingPersonal(false)
-              }
-            }}
-            className="auth-form"
-          >
-            <label>
-              Tên sổ
-              <input name="name" defaultValue="Sổ chi tiêu" required />
-            </label>
-            <div className="member-input-grid">
-              {['Thành viên 1', 'Thành viên 2', 'Thành viên 3', 'Thành viên 4'].map((label, i) => (
-                <label key={label}>
-                  {label}
-                  <input name={`member${i + 1}`} placeholder={['Linh', 'Minh', 'Anh', 'Huy'][i]} required />
-                </label>
-              ))}
-            </div>
-            {createPersonalError && <div className="form-error">{createPersonalError}</div>}
-            <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
-              <button
-                type="button"
-                className="button secondary"
-                style={{ flex: 1, height: '40px', fontSize: '13px' }}
-                disabled={creatingPersonal}
-                onClick={() => setShowCreatePersonalForm(false)}
-              >
-                Hủy
-              </button>
-              <button
-                type="submit"
-                className="button primary"
-                style={{ flex: 2, height: '40px', fontSize: '13px' }}
-                disabled={creatingPersonal}
-              >
-                {creatingPersonal ? 'Đang tạo...' : 'Tạo sổ chi tiêu'}
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
+      <CreatePersonalLedgerModal
+        onClose={() => setShowCreatePersonalForm(false)}
+        onCreate={async (name, memberNames) => {
+          if (!onCreatePersonalLedger) return
+          await onCreatePersonalLedger(name, memberNames)
+          setShowCreatePersonalForm(false)
+        }}
+      />
     )}
   </Modal>
 }
@@ -3696,7 +3862,7 @@ function ExpenseModal({
 let activeModalLockCount = 0
 let lockedWindowScrollY = 0
 
-function Modal({ title, subtitle, onClose, children, centered = false, wide = false, eyebrow = 'SỔ CHI TIÊU NHÓM', className = '' }: { title: string; subtitle: string; onClose: () => void; children: React.ReactNode; centered?: boolean; wide?: boolean; eyebrow?: string | null; className?: string }) {
+function Modal({ title, subtitle, onClose, children, centered = false, wide = false, eyebrow = 'SỔ CHI TIÊU NHÓM', className = '', hideHeader = false }: { title: string; subtitle: string; onClose: () => void; children: React.ReactNode; centered?: boolean; wide?: boolean; eyebrow?: string | null; className?: string; hideHeader?: boolean }) {
   const backdropRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLElement>(null)
   const onCloseRef = useRef(onClose)
@@ -3892,5 +4058,5 @@ function Modal({ title, subtitle, onClose, children, centered = false, wide = fa
     }
   }, [])
 
-  return <div ref={backdropRef} className={`modal-backdrop ${centered ? 'centered-backdrop' : ''} ${className}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section ref={cardRef} className={`modal-card ${centered ? 'centered-modal' : ''} ${wide ? 'wide-modal' : ''}`}><div className="modal-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} aria-label="Đóng"><X size={18} /></button></div>{children}</section></div>
+  return <div ref={backdropRef} className={`modal-backdrop ${centered ? 'centered-backdrop' : ''} ${className}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section ref={cardRef} className={`modal-card ${centered ? 'centered-modal' : ''} ${wide ? 'wide-modal' : ''}`}>{!hideHeader && <div className="modal-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} aria-label="Đóng"><X size={18} /></button></div>}{children}</section></div>
 }
