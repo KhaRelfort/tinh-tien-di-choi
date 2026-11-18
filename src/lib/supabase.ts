@@ -60,6 +60,25 @@ export async function initializeCloudLedger(name: string, memberNames: string[])
   return fetchCloudLedger()
 }
 
+// NOTE(VI): Lý do: Tạo mã UUID mới để chia sẻ sổ cho khách (vô hiệu hóa mã cũ đối với người dùng mới hoặc đã xóa cache)
+// Trước: Không có hàm này, mã chia sẻ cố định là ID của sổ
+// Sau: Gọi RPC regenerate_ledger_share_code để đổi mã UUID mới trên server, có bẫy lỗi PGRST202 để thông báo tiếng Việt dễ hiểu
+// Test: Bấm nút icon tạo mã mới trong popup Tài khoản -> Nhận UUID mới tức thì
+export async function regenerateShareCode(groupId: string): Promise<string> {
+  if (!supabase) throw new Error('Chưa cấu hình Supabase.')
+  const { data, error } = await supabase.rpc('regenerate_ledger_share_code', { p_group_id: groupId.trim() })
+  if (!error && data) {
+    return String(data)
+  }
+  if (error) {
+    if (error.code === 'PGRST202') {
+      throw new Error('Chưa cập nhật SQL trên Supabase (thiếu hàm regenerate_ledger_share_code). Vui lòng mở Supabase SQL Editor và chạy đoạn mã được cung cấp.')
+    }
+    throw formatSupabaseError(error, 'Không thể tạo mã sổ mới.')
+  }
+  return String(data)
+}
+
 // NOTE(VI): Lý do: Bỏ cơ chế fallback tự động sang 'custom' theo yêu cầu người dùng vì Supabase đã được nâng cấp cho phép lưu trực tiếp splitMode 'percent'
 // Trước: Có đoạn kiểm tra và retry với 'custom' nếu dính lỗi constraint expenses_split_mode_check
 // Sau: Gửi trực tiếp operation lên máy chủ

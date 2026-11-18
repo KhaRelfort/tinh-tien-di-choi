@@ -2,8 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import {
   ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight,
   Camera, CircleHelp, Cloud, CloudOff, Copy, Crown, DollarSign, Download, Film, Filter, History, Info, LogOut, Pencil, Plane, Printer, UserRound,
-  Plus, ReceiptText, RefreshCw, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
-  Wallet, X,
+  Plus, ReceiptText, RefreshCw, Share2, ShoppingCart, Sparkles, Utensils, UserRoundPlus, LockKeyhole,
+  Wallet, X, LogIn, UserPlus,
 } from 'lucide-react'
 import { toCanvas } from 'html-to-image'
 import JSZip from 'jszip'
@@ -13,7 +13,7 @@ import {
 } from './domain'
 import { clearQueue, queueOperation, readLedger, readQueue, removeOperation, replaceOperation, writeLedger } from './lib/localStore'
 import {
-  fetchCloudLedger, fetchMonthlyExpenseTotals, fetchUserLedgers, initializeCloudLedger, isCloudConfigured, signIn, signOut, signUp, supabase, syncOperation,
+  fetchCloudLedger, fetchMonthlyExpenseTotals, fetchUserLedgers, initializeCloudLedger, isCloudConfigured, regenerateShareCode, signIn, signOut, signUp, supabase, syncOperation,
 } from './lib/supabase'
 import { QR_PAYMENT_DATA_URL } from './qrData'
 
@@ -173,7 +173,11 @@ export default function App() {
       toastTimerRef.current = null
     }, 2800)
   }, [])
-  const [expenseFilters, setExpenseFilters] = useState({ keyword: '', fromDate: '', toDate: '', category: '', memberId: '', periodId: '' })
+  // NOTE(VI): Lý do: Bổ sung payerId để lọc theo người trả trong bộ lọc lịch sử chi tiêu theo yêu cầu người dùng
+  // Trước: expenseFilters chỉ có keyword, fromDate, toDate, category, memberId, periodId
+  // Sau: Bổ sung payerId vào expenseFilters
+  // Test: Chọn Người trả trong bộ lọc -> lọc chính xác các khoản chi do người đó thanh toán
+  const [expenseFilters, setExpenseFilters] = useState({ keyword: '', fromDate: '', toDate: '', category: '', memberId: '', periodId: '', payerId: '' })
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingCount, setPendingCount] = useState(0)
   const [syncing, setSyncing] = useState(false)
@@ -182,7 +186,13 @@ export default function App() {
   const [conflictOperation, setConflictOperation] = useState<Operation | null>(null)
   const [sessionReady, setSessionReady] = useState(!isCloudConfigured)
   const [session, setSession] = useState<boolean>(!isCloudConfigured)
+  // NOTE(VI): Lý do: Dùng userEmailRef để tránh lỗi stale closure trong các callback bất đồng bộ như hydrate
+  // Trước: hydrate tham chiếu userEmail từ closure ban đầu (''), khiến người dùng vừa đăng nhập vẫn bị coi là khách (!userEmail)
+  // Sau: userEmailRef luôn được đồng bộ ngay lập tức với state userEmail mới nhất
+  // Test: Khách vào bằng ID -> Bấm đăng ký/đăng nhập tài khoản -> App nhận diện đúng ngay lập tức là chủ sổ/thành viên có tài khoản
   const [userEmail, setUserEmail] = useState('')
+  const userEmailRef = useRef(userEmail)
+  userEmailRef.current = userEmail
 
   useEffect(() => {
     if (!selectedChartMonth) return
@@ -195,8 +205,112 @@ export default function App() {
   const [showAccount, setShowAccount] = useState(false)
   const [accountFocusRename, setAccountFocusRename] = useState(false)
   const [needsSetup, setNeedsSetup] = useState(false)
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
+  // NOTE(VI): Lý do: Đổi giao diện lúc vào app mặc định vào thẳng "Vào sổ chi tiêu nhóm ngay" (hiện ô nhập UUID/link mời ngay), bên dưới là Đăng nhập và Đăng ký theo yêu cầu người dùng
+  // Trước: authMode mặc định là 'welcome' với 3 nút bấm
+  // Sau: authMode mặc định là 'join_guest' hiện ngay form nhập mã UUID/link mời; bên dưới có link chuyển sang login/signup
+  // Test: Mở app trình duyệt mới -> Thấy ngay ô nhập mã sổ chi tiêu/link mời; có nút Đăng nhập và Đăng ký bên dưới
+  const [authMode, setAuthMode] = useState<'join_guest' | 'login' | 'signup'>('join_guest')
   const [authError, setAuthError] = useState('')
+  const [guestInput, setGuestInput] = useState('')
+  const [isJoiningGuest, setIsJoiningGuest] = useState(false)
+  const [pendingGuestLedger, setPendingGuestLedger] = useState<Ledger | null>(null)
+
+  const extractUuid = useCallback((input: string): string | null => {
+    if (!input) return null
+    const match = input.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/)
+    return match ? match[0].toLowerCase() : null
+  }, [])
+
+  // NOTE(VI): Lý do: Hỗ trợ người dùng tham gia sổ trực tiếp qua mã UUID hoặc link mời, sau đó hiện bảng thành viên để chọn mình là ai trong nhóm
+  // Trước: Vào thẳng sổ với tên chung là "Khách", không chọn được mình là ai
+  // Sau: Tải thông tin sổ xong -> Mở popup chọn thành viên (SelectGuestMemberModal) -> Chọn tên xong mới vào sổ, topbar hiển thị "[Tên] (Không tài khoản)"
+  // Test: Nhập mã UUID -> Hiện popup chọn thành viên có avatar -> Bấm chọn thành viên -> Bấm Xác nhận -> Vào sổ đúng tên đã chọn
+  const confirmJoinGuest = useCallback(async (selectedMember: Member, targetLedger?: Ledger) => {
+    const remote = targetLedger || pendingGuestLedger
+    if (!remote) return
+    try {
+      localStorage.setItem('chia-tien-guest-ledger-id', remote.id)
+      localStorage.setItem('chia-tien-active-ledger-id', remote.id)
+      localStorage.setItem('chia-tien-guest-member-id', selectedMember.id)
+      localStorage.setItem('chia-tien-guest-member-name', selectedMember.name)
+      localStorage.setItem(`chia-tien-guest-member-id-${remote.id}`, selectedMember.id)
+      localStorage.setItem(`chia-tien-guest-member-name-${remote.id}`, selectedMember.name)
+    } catch {}
+
+    const queue = await readQueue()
+    const merged = queue.length ? applyPendingOperations(remote, queue) : remote
+    const normalized = normalizeLedger(merged)
+    normalized.currentMemberId = selectedMember.id
+    normalized.isGuest = true
+    setLedger(normalized)
+    await writeLedger(normalized)
+    setActiveLedgerId(remote.id)
+    setUserLedgers([{
+      id: remote.id,
+      name: remote.name,
+      isOwner: false,
+      linkedMemberName: selectedMember.name,
+      linkedMemberId: selectedMember.id,
+    }])
+    setNeedsSetup(false)
+    setSession(true)
+    setSessionReady(true)
+    setPendingGuestLedger(null)
+    showToast(`Chào mừng ${selectedMember.name} vào sổ "${remote.name}"!`)
+  }, [pendingGuestLedger, showToast])
+
+  const handleJoinGuest = useCallback(async (e?: FormEvent<HTMLFormElement>, directInput?: string) => {
+    if (e) e.preventDefault()
+    setAuthError('')
+    const raw = (directInput ?? guestInput).trim()
+    const uuid = extractUuid(raw)
+    if (!uuid) {
+      setAuthError('Mã sổ không hợp lệ. Vui lòng nhập mã UUID hoặc dán toàn bộ đường link mời.')
+      return
+    }
+    setIsJoiningGuest(true)
+    try {
+      const remote = await fetchCloudLedger(uuid)
+      if (!remote?.id) {
+        setAuthError((remote as any)?.error || 'Không tìm thấy sổ chi tiêu tương ứng với mã này. Vui lòng kiểm tra lại mã hoặc hỏi lại chủ sổ.')
+        setIsJoiningGuest(false)
+        return
+      }
+
+      const activeMembers = remote.members?.filter((m) => m.active) || []
+      if (activeMembers.length > 0) {
+        setPendingGuestLedger(remote)
+        setIsJoiningGuest(false)
+        return
+      }
+
+      await confirmJoinGuest({ id: makeId(), name: 'Khách', active: true, sortOrder: 0 }, remote)
+    } catch (err: any) {
+      const msg = err?.message || 'Không thể kết nối đến máy chủ.'
+      setAuthError(`Lỗi kết nối: ${msg}`)
+    } finally {
+      setIsJoiningGuest(false)
+    }
+  }, [confirmJoinGuest, extractUuid, guestInput])
+
+  // NOTE(VI): Lý do: Tự động phát hiện mã mời trên URL (?join=<UUID>) khi mở app để vào thẳng sổ cho khách
+  // Trước: Chưa có tính năng vào sổ qua link URL
+  // Sau: Đọc query param join, nếu có thì tự động gọi handleJoinGuest và xóa param khỏi URL để giữ URL sạch
+  // Test: Mở link dạng http://localhost:5173/?join=<UUID> -> Vào thẳng sổ chi tiêu nhóm mà không hiện màn hình đăng nhập
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const searchParams = new URLSearchParams(window.location.search)
+      const joinParam = searchParams.get('join')
+      if (joinParam) {
+        const uuid = extractUuid(joinParam)
+        if (uuid) {
+          window.history.replaceState({}, document.title, window.location.pathname)
+          void handleJoinGuest(undefined, uuid)
+        }
+      }
+    } catch {}
+  }, [extractUuid, handleJoinGuest])
   // NOTE(VI): Lý do: Quản lý danh sách sổ (sổ của tôi & sổ được mời) và lưu sổ đang chọn vào localStorage
   // Trước: App chỉ biết duy nhất 1 sổ gắn theo auth.uid() của chủ sổ
   // Sau: Lưu danh sách sổ userLedgers, đọc và lưu activeLedgerId vào localStorage để lần sau vào lại đúng sổ đó
@@ -237,8 +351,23 @@ export default function App() {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
   }, [])
 
-  const hydrate = useCallback(async (cloud = false, requestedGroupId?: string) => {
+  // NOTE(VI): Lý do: Sửa lỗi người dùng đăng nhập tài khoản tạo sổ nhưng bị nhận diện nhầm thành khách/người được mời
+  // Trước: hydrate chỉ đọc userEmail từ closure (bị rỗng) nên luôn chạy vào nhánh if (!userEmail), gán isGuest=true và ghi đè isOwner=false
+  // Sau: hydrate xác định effectiveEmail từ tham số requestedEmail -> userEmailRef -> Supabase session; khi có email hợp lệ thì xóa sạch cache khách, đặt isGuest=false và cập nhật đúng isOwner từ cloud
+  // Test: Đang ở sổ với tư cách khách -> Bấm Đăng nhập bằng mail chủ sổ (chukhactdt@gmail.com) -> Không còn nhãn "(Không tài khoản)" và hiện đúng huy hiệu Chủ sổ 👑
+  const hydrate = useCallback(async (cloud = false, requestedGroupId?: string, requestedEmail?: string) => {
     if (!cloud) setCachedMonthlyTotals(null)
+    let effectiveEmail = (requestedEmail ?? userEmailRef.current ?? userEmail).trim()
+    if (!effectiveEmail && supabase) {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession()
+        effectiveEmail = (sessionData.session?.user?.email ?? '').trim()
+      } catch {}
+    }
+    if (effectiveEmail && effectiveEmail !== userEmail) {
+      userEmailRef.current = effectiveEmail
+      setUserEmail(effectiveEmail)
+    }
     const saved = await readLedger()
     if (saved) { const normalized = normalizeLedger(saved); setLedger(normalized); await writeLedger(normalized) }
     else if (!cloud) {
@@ -340,6 +469,53 @@ export default function App() {
           const queue = await readQueue()
           const merged = queue.length ? applyPendingOperations(remote, queue) : remote
           const normalized = normalizeLedger(merged)
+          if (!effectiveEmail) {
+            let gId: string | null = null
+            let gName: string | null = null
+            try {
+              gId = localStorage.getItem(`chia-tien-guest-member-id-${remote.id}`) || localStorage.getItem('chia-tien-guest-member-id')
+              gName = localStorage.getItem(`chia-tien-guest-member-name-${remote.id}`) || localStorage.getItem('chia-tien-guest-member-name')
+            } catch {}
+            if (gId) {
+              normalized.currentMemberId = gId
+            }
+            normalized.isGuest = true
+            setUserLedgers([{
+              id: remote.id,
+              name: remote.name,
+              isOwner: false,
+              linkedMemberName: gName || (gId ? normalized.members.find((m) => m.id === gId)?.name : null) || 'Khách',
+              linkedMemberId: gId || null,
+            }])
+          } else {
+            normalized.isGuest = false
+            try {
+              localStorage.removeItem('chia-tien-guest-ledger-id')
+              localStorage.removeItem('chia-tien-guest-member-id')
+              localStorage.removeItem('chia-tien-guest-member-name')
+              localStorage.removeItem(`chia-tien-guest-member-id-${remote.id}`)
+              localStorage.removeItem(`chia-tien-guest-member-name-${remote.id}`)
+            } catch {}
+            if (remote.isOwner !== undefined) {
+              normalized.isOwner = remote.isOwner !== false
+            }
+            setUserLedgers((prev) => {
+              if (prev.length === 0) {
+                return [{
+                  id: remote!.id,
+                  name: remote!.name,
+                  isOwner: remote!.isOwner !== false,
+                  ownerEmail: effectiveEmail,
+                  shareCode: remote!.shareCode || remote!.id,
+                }]
+              }
+              return prev.map((item) =>
+                item.id === remote!.id
+                  ? { ...item, name: remote!.name, isOwner: remote!.isOwner !== false, shareCode: remote!.shareCode || item.shareCode }
+                  : item
+              )
+            })
+          }
           setLedger(normalized)
           await writeLedger(normalized)
           setNeedsSetup(false)
@@ -376,7 +552,7 @@ export default function App() {
         }
       }
     }
-  }, [isOnline, refreshMonthlyTotals])
+  }, [isOnline, refreshMonthlyTotals, userEmail])
 
   // NOTE(VI): Lý do: Hỗ trợ mở và sử dụng app hoàn toàn khi mất mạng (Offline) mà không bị văng ra màn hình đăng nhập hoặc treo ở màn hình tải
   // Trước: Khi mất mạng và bấm F5 / mở lại app, nếu token Supabase cần refresh qua mạng bị lỗi thì getSession()/onAuthStateChange trả về null, khiến app xóa ledger trên RAM và bắt đăng nhập lại (hoặc treo nếu promise lỗi)
@@ -389,13 +565,17 @@ export default function App() {
     const tryRestoreOfflineSession = async () => {
       const saved = await readLedger()
       let cachedEmail = ''
-      try { cachedEmail = localStorage.getItem('chia-tien-offline-email') ?? '' } catch {}
+      let guestId = ''
+      try {
+        cachedEmail = localStorage.getItem('chia-tien-offline-email') ?? ''
+        guestId = localStorage.getItem('chia-tien-guest-ledger-id') ?? ''
+      } catch {}
       if (cancelled) return false
-      if (saved || cachedEmail) {
+      if (saved || cachedEmail || guestId) {
         setUserEmail((prev) => prev || cachedEmail)
         setSession(true)
         setSessionReady(true)
-        void hydrate(false)
+        void hydrate(false, guestId || undefined)
         return true
       }
       return false
@@ -413,11 +593,17 @@ export default function App() {
         const authenticated = Boolean(data.session)
         if (authenticated) {
           const email = data.session?.user.email ?? ''
-          try { localStorage.setItem('chia-tien-offline-email', email || 'offline') } catch {}
+          try {
+            localStorage.setItem('chia-tien-offline-email', email || 'offline')
+            localStorage.removeItem('chia-tien-guest-ledger-id')
+            localStorage.removeItem('chia-tien-guest-member-id')
+            localStorage.removeItem('chia-tien-guest-member-name')
+          } catch {}
+          userEmailRef.current = email
           setUserEmail(email)
           setSession(true)
           setSessionReady(true)
-          void hydrate(true)
+          void hydrate(true, undefined, email)
         } else if (!navigator.onLine) {
           const restored = await tryRestoreOfflineSession()
           if (!restored && !cancelled) {
@@ -425,9 +611,22 @@ export default function App() {
             setSessionReady(true)
           }
         } else {
-          setUserEmail('')
-          setSession(false)
-          setSessionReady(true)
+          // NOTE(VI): Lý do: Khôi phục phiên khách (guest) nếu trước đó đã vào sổ bằng mã UUID
+          // Trước: Nếu không có auth session -> lập tức setSession(false) bắt đăng nhập
+          // Sau: Kiểm tra chia-tien-guest-ledger-id; nếu có -> duy trì phiên khách và nạp sổ
+          // Test: Vào sổ bằng mã UUID -> F5 tải lại trang -> vẫn ở trong sổ, không bị quay lại màn hình Welcome
+          let guestId: string | null = null
+          try { guestId = localStorage.getItem('chia-tien-guest-ledger-id') } catch {}
+          if (guestId) {
+            setUserEmail('')
+            setSession(true)
+            setSessionReady(true)
+            void hydrate(true, guestId)
+          } else {
+            setUserEmail('')
+            setSession(false)
+            setSessionReady(true)
+          }
         }
       })
       .catch(async () => {
@@ -443,24 +642,43 @@ export default function App() {
       const authenticated = Boolean(authSession)
       if (authenticated) {
         const email = authSession?.user.email ?? ''
-        try { localStorage.setItem('chia-tien-offline-email', email || 'offline') } catch {}
+        try {
+          localStorage.setItem('chia-tien-offline-email', email || 'offline')
+          localStorage.removeItem('chia-tien-guest-ledger-id')
+          localStorage.removeItem('chia-tien-guest-member-id')
+          localStorage.removeItem('chia-tien-guest-member-name')
+        } catch {}
+        userEmailRef.current = email
         setUserEmail(email)
         setSession(true)
         setSessionReady(true)
-        void hydrate(true)
+        void hydrate(true, undefined, email)
       } else if (!navigator.onLine && event !== 'SIGNED_OUT') {
         void tryRestoreOfflineSession()
       } else {
-        try {
-          localStorage.removeItem('chia-tien-skipped-setup')
-          localStorage.removeItem('chia-tien-active-ledger-id')
-        } catch {}
-        setUserEmail('')
-        setSession(false)
-        setSessionReady(true)
-        setLedger(null)
-        setNeedsSetup(false)
-        setShowAccount(false)
+        let guestId: string | null = null
+        try { guestId = localStorage.getItem('chia-tien-guest-ledger-id') } catch {}
+        if (guestId && event !== 'SIGNED_OUT') {
+          setUserEmail('')
+          setSession(true)
+          setSessionReady(true)
+          void hydrate(true, guestId)
+        } else {
+          try {
+            localStorage.removeItem('chia-tien-skipped-setup')
+            localStorage.removeItem('chia-tien-active-ledger-id')
+            localStorage.removeItem('chia-tien-guest-ledger-id')
+            localStorage.removeItem('chia-tien-guest-member-id')
+            localStorage.removeItem('chia-tien-guest-member-name')
+          } catch {}
+          setUserEmail('')
+          setUserLedgers([])
+          setSession(false)
+          setSessionReady(true)
+          setLedger(null)
+          setNeedsSetup(false)
+          setShowAccount(false)
+        }
       }
     })
     return () => {
@@ -660,14 +878,152 @@ export default function App() {
   }
 
   if (isCloudConfigured && !sessionReady) return <div className="loading-screen"><div className="brand-mark"><Wallet /></div><p>Đang mở sổ chi tiêu...</p></div>
-  if (isCloudConfigured && !session) return <div className="auth-screen">
-    <div className="auth-card"><div className="brand-mark"><Wallet /></div><span className="eyebrow">ĐI CHƠI, CHIA TIỀN</span>
-      <h1>{authMode === 'login' ? 'Chào bạn trở lại' : 'Tạo tài khoản quản lý'}</h1><p>Đăng nhập để mở sổ chi tiêu của nhóm.</p>
-      <form onSubmit={(event) => void submitAuth(event)} className="auth-form"><label>Email<input name="email" type="email" required placeholder="ban@email.com" /></label><label>Mật khẩu<input name="password" type="password" minLength={6} required placeholder="Ít nhất 6 ký tự" /></label>
-        {authError && <div className="form-error">{authError}</div>}<button className="button primary full" type="submit">{authMode === 'login' ? 'Đăng nhập' : 'Tạo tài khoản'}</button>
-      </form><button className="text-button" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>{authMode === 'login' ? 'Chưa có tài khoản? Tạo mới' : 'Đã có tài khoản? Đăng nhập'}</button>
-      {authMode === 'signup' && <p className="hint">Nếu email cần xác nhận, hãy mở liên kết trong hộp thư trước khi đăng nhập.</p>}
-    </div></div>
+  // NOTE(VI): Lý do: Hỗ trợ 3 lựa chọn khi vào app lần đầu: Đăng nhập, Đăng ký, Vào sổ chi tiêu nhóm ngay (không cần tài khoản)
+  // Trước: Chỉ có form Đăng nhập và link chuyển sang Đăng ký
+  // Sau: Mặc định hiển thị màn hình 'welcome' với 3 nút bấm:
+  //      1. 'Vào sổ chi tiêu nhóm ngay': Mở ô nhập mã UUID hoặc dán link mời để vào ngay
+  //      2. 'Đăng nhập': Giữ nguyên logic đăng nhập
+  //      3. 'Đăng ký tài khoản': Giữ nguyên logic đăng ký
+  // Test: Mở app ở trình duyệt mới -> Thấy 3 lựa chọn rõ ràng; bấm vào từng nút chuyển đúng form và có nút quay lại
+  // NOTE(VI): Lý do: Đổi giao diện lúc vào app mặc định vào thẳng "Vào sổ chi tiêu nhóm ngay" (hiện ô nhập UUID/link mời ngay), bên dưới là Đăng nhập và Đăng ký theo yêu cầu người dùng
+  // Trước: Mặc định hiện 3 nút bấm lựa chọn (welcome mode)
+  // Sau: Mặc định hiện ngay form nhập mã UUID để người dùng vào sổ nhanh nhất có thể; bên dưới có link/nút chuyển sang Đăng nhập và Đăng ký
+  // Test: Mở app trình duyệt mới -> Thấy ngay ô nhập mã sổ chi tiêu/link mời; có nút Đăng nhập và Đăng ký bên dưới
+  if (isCloudConfigured && !session) return (
+    <div className="auth-screen">
+      <div className="auth-card">
+        <div style={{ display: 'grid', placeItems: 'center', margin: '0 auto 16px', color: 'var(--green, #257b5c)' }}>
+          <Wallet size={46} strokeWidth={2} />
+        </div>
+        <span className="eyebrow">ĐI CHƠI, CHIA TIỀN</span>
+
+        {authMode === 'join_guest' && (
+          <>
+            <h1 style={{ marginBottom: '8px' }}>Vào sổ chi tiêu nhóm</h1>
+            <p style={{ color: '#687066', fontSize: '13px', lineHeight: 1.5, marginBottom: '16px' }}>
+              Dán mã sổ (UUID) để vào nhóm ngay mà không cần tạo tài khoản.
+            </p>
+            <form onSubmit={(e) => void handleJoinGuest(e)} className="auth-form">
+              <label>
+                Mã sổ (UUID)
+                <input
+                  name="guestInput"
+                  type="text"
+                  required
+                  autoFocus
+                  value={guestInput}
+                  onChange={(e) => setGuestInput(e.target.value)}
+                  placeholder="Dán mã UUID tại đây..."
+                />
+              </label>
+              {authError && <div className="form-error">{authError}</div>}
+              <button
+                className="button primary full"
+                type="submit"
+                disabled={isJoiningGuest}
+                style={{ height: '42px', marginTop: '4px' }}
+              >
+                {isJoiningGuest ? (
+                  <>
+                    <RefreshCw size={15} className="spin" /> Đang tải sổ...
+                  </>
+                ) : (
+                  <>
+                    <ArrowRight size={16} /> Vào sổ ngay
+                  </>
+                )}
+              </button>
+            </form>
+
+            <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #f0f0ee', display: 'flex', flexDirection: 'column', gap: '8px', textAlign: 'center' }}>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => { setAuthError(''); setAuthMode('login') }}
+                style={{ fontSize: '12px', fontWeight: 600 }}
+              >
+                <LogIn size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: '4px' }} /> Đã có tài khoản? Đăng nhập
+              </button>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => { setAuthError(''); setAuthMode('signup') }}
+                style={{ fontSize: '12px', color: '#687066' }}
+              >
+                <UserPlus size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: '4px' }} /> Tạo tài khoản quản lý mới
+              </button>
+            </div>
+          </>
+        )}
+
+        {authMode === 'login' && (
+          <>
+            <h1>Chào bạn trở lại</h1>
+            <p>Đăng nhập để mở sổ chi tiêu của nhóm.</p>
+            <form onSubmit={(event) => void submitAuth(event)} className="auth-form">
+              <label>Email<input name="email" type="email" required placeholder="ban@email.com" /></label>
+              <label>Mật khẩu<input name="password" type="password" minLength={6} required placeholder="Ít nhất 6 ký tự" /></label>
+              {authError && <div className="form-error">{authError}</div>}
+              <button className="button primary full" type="submit">Đăng nhập</button>
+            </form>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => { setAuthError(''); setAuthMode('join_guest') }}
+              style={{ marginTop: '14px', fontWeight: 600 }}
+            >
+              ← Vào sổ bằng mã sổ (Không cần tài khoản)
+            </button>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => { setAuthError(''); setAuthMode('signup') }}
+              style={{ color: '#687066', marginTop: '4px' }}
+            >
+              Chưa có tài khoản? Tạo mới
+            </button>
+          </>
+        )}
+
+        {authMode === 'signup' && (
+          <>
+            <h1>Tạo tài khoản quản lý</h1>
+            <p>Đăng ký để tạo và lưu trữ các sổ chi tiêu của bạn.</p>
+            <form onSubmit={(event) => void submitAuth(event)} className="auth-form">
+              <label>Email<input name="email" type="email" required placeholder="ban@email.com" /></label>
+              <label>Mật khẩu<input name="password" type="password" minLength={6} required placeholder="Ít nhất 6 ký tự" /></label>
+              {authError && <div className="form-error">{authError}</div>}
+              <button className="button primary full" type="submit">Tạo tài khoản</button>
+            </form>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => { setAuthError(''); setAuthMode('join_guest') }}
+              style={{ marginTop: '14px', fontWeight: 600 }}
+            >
+              ← Vào sổ bằng mã sổ (Không cần tài khoản)
+            </button>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => { setAuthError(''); setAuthMode('login') }}
+              style={{ color: '#687066', marginTop: '4px' }}
+            >
+              Đã có tài khoản? Đăng nhập
+            </button>
+            <p className="hint">Nếu email cần xác nhận, hãy mở liên kết trong hộp thư trước khi đăng nhập.</p>
+          </>
+        )}
+      </div>
+      {pendingGuestLedger && (
+        <SelectGuestMemberModal
+          ledger={pendingGuestLedger}
+          onSelect={(member) => void confirmJoinGuest(member)}
+          onClose={() => setPendingGuestLedger(null)}
+        />
+      )}
+    </div>
+  )
   // NOTE(VI): Lý do: Bỏ nền vuông màu xanh, icon ví phóng to nét vẽ màu xanh theo yêu cầu người dùng
   // Trước: <div className="brand-mark"><Wallet /></div> (nền vuông xanh, icon trắng 20px)
   // Sau: Icon Wallet to 46px, nét vẽ màu xanh var(--green), không có nền vuông
@@ -773,6 +1129,7 @@ export default function App() {
     if (expenseFilters.fromDate && expense.date < expenseFilters.fromDate) return false
     if (expenseFilters.toDate && expense.date > expenseFilters.toDate) return false
     if (expenseFilters.category && expense.category !== expenseFilters.category) return false
+    if (expenseFilters.payerId && expense.payerId !== expenseFilters.payerId) return false
     if (expenseFilters.memberId && expense.payerId !== expenseFilters.memberId && !expense.splits.some((split) => split.memberId === expenseFilters.memberId)) return false
     return true
   })
@@ -1010,6 +1367,31 @@ export default function App() {
     }
   }
 
+  // NOTE(VI): Lý do: Tạo mã UUID mới cho sổ chi tiêu (dùng async function thông thường, tuyệt đối không dùng useCallback để tránh vi phạm Rules of Hooks sau early return)
+  // Trước: Dùng useCallback sau early return -> gây crash "Rendered more hooks than during the previous render"
+  // Sau: Dùng plain async function handleRegenerateShareCode, hỗ trợ targetGroupId
+  // Test: Mở app ở chế độ chưa đăng nhập / đăng nhập -> không còn bị lỗi "Rendered more hooks than during the previous render", app mở trơn tru
+  async function handleRegenerateShareCode(targetGroupId?: string): Promise<string | void> {
+    const gId = targetGroupId || ledger?.id
+    if (!gId) return
+    if (!isOnline) {
+      showToast('Cần có kết nối internet để đổi mã mới.')
+      return
+    }
+    let newCode: string = makeId()
+    if (isCloudConfigured) {
+      newCode = await regenerateShareCode(gId)
+    }
+    if (ledger && gId === ledger.id) {
+      const updated: Ledger = { ...ledger, shareCode: newCode }
+      setLedger(updated)
+      await writeLedger(updated)
+    }
+    setUserLedgers((prev) => prev.map((item) => item.id === gId ? { ...item, shareCode: newCode } : item))
+    showToast('Đã tạo mã UUID mới thành công!')
+    return newCode
+  }
+
   return <><div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><Wallet /></div><div><strong>chia tiền</strong><span>đi chơi cùng nhau</span></div></div>
@@ -1035,31 +1417,31 @@ export default function App() {
             Trước: Tiêu đề tĩnh SỔ CHI TIÊU NHÓM
             Sau: Hiển thị tên sổ thực tế, có nhãn "Được mời" nếu là thành viên, click mở modal Tài khoản để chuyển sổ
             Test: Mở sổ được mời -> Thấy nhãn 👥 Được mời kèm tên thành viên của mình */}
-        <div
-          className="app-wordmark"
-          onClick={() => { if (userLedgers.length > 1 || ledger.id === 'uncreated-personal-ledger') setShowAccount(true) }}
-          style={{ cursor: (userLedgers.length > 1 || ledger.id === 'uncreated-personal-ledger') ? 'pointer' : 'default' }}
-          title={userLedgers.length > 1 ? 'Bấm để đổi sổ chi tiêu' : ledger.id === 'uncreated-personal-ledger' ? 'Bấm để tạo sổ chi tiêu' : undefined}
-        >
+        {/* NOTE(VI): Lý do: Bỏ toàn bộ sự kiện click khi bấm vào tên app và tên người dùng theo yêu cầu người dùng
+            Trước: Bấm vào tên app thì mở modal Tài khoản, bấm vào tên người dùng (Không tài khoản) thì mở popup đổi thành viên
+            Sau: Bỏ onClick, cursor: default, bấm vào tiêu đề app và tên người dùng hoàn toàn không có hiện tượng gì xảy ra
+            Test: Bấm vào tên sổ và tên người dùng ở header topbar -> Không có popup hay sự kiện nào mở lên */}
+        <div className="app-wordmark">
           <span className="wordmark-icon"><Wallet size={18} /></span>
-          {/* NOTE(VI): Lý do: Bỏ nút cây bút đổi tên sổ ở tiêu đề app theo yêu cầu người dùng, việc đổi tên thực hiện bên trong mục Tài khoản
-              Trước: Có nút cây bút ✏️ bên cạnh tên sổ ở tiêu đề
-              Sau: Chỉ hiển thị tên sổ (và mũi tên nếu có nhiều sổ), muốn sửa tên thì mở mục Tài khoản
-              Test: Nhìn lên tiêu đề app -> Không còn icon cây bút; vào Tài khoản -> vẫn đổi tên được */}
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
               <strong>{ledger.name || 'Sổ chi tiêu'}</strong>
-              {userLedgers.length > 1 && <ChevronDown size={13} style={{ color: '#287b5d' }} />}
             </div>
             {ledger.id === 'uncreated-personal-ledger' ? (
               <span style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 600 }}>
                 Chưa tạo nhóm
               </span>
-            ) : ledger.isOwner === false && (
+            ) : (!userEmail && (ledger.isGuest || !ledger.currentUserEmail)) ? (
+              <span
+                style={{ fontSize: '10px', color: '#257b5c', fontWeight: 600 }}
+              >
+                👤 {(ledger.members.find((m) => m.id === ledger.currentMemberId)?.name || (typeof window !== 'undefined' ? localStorage.getItem(`chia-tien-guest-member-name-${ledger.id}`) || localStorage.getItem('chia-tien-guest-member-name') : null) || 'Khách')} (Không tài khoản)
+              </span>
+            ) : ledger.isOwner === false ? (
               <span style={{ fontSize: '10px', color: '#166534', fontWeight: 600 }}>
                 👥 Được mời {ledger.currentUserEmail ? `(${ledger.members.find(m => m.id === ledger.currentMemberId)?.name || ledger.currentUserEmail})` : ''}
               </span>
-            )}
+            ) : null}
           </div>
         </div>
         <div className="top-actions">
@@ -1221,9 +1603,10 @@ export default function App() {
               </label>
               <label>Từ ngày<input type="date" value={expenseFilters.fromDate} onChange={(event) => setExpenseFilters({ ...expenseFilters, fromDate: event.target.value })} /></label>
               <label>Đến ngày<input type="date" value={expenseFilters.toDate} onChange={(event) => setExpenseFilters({ ...expenseFilters, toDate: event.target.value })} /></label>
-              <label>Danh mục<select value={expenseFilters.category} onChange={(event) => setExpenseFilters({ ...expenseFilters, category: event.target.value })}><option value="">Tất cả danh mục</option>{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
+              <label style={{ gridColumn: 'span 2' }}>Danh mục<select value={expenseFilters.category} onChange={(event) => setExpenseFilters({ ...expenseFilters, category: event.target.value })}><option value="">Tất cả danh mục</option>{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
+              <label>Người trả<select value={expenseFilters.payerId} onChange={(event) => setExpenseFilters({ ...expenseFilters, payerId: event.target.value })}><option value="">Tất cả người trả</option>{ledger.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
               <label>Thành viên<select value={expenseFilters.memberId} onChange={(event) => setExpenseFilters({ ...expenseFilters, memberId: event.target.value })}><option value="">Tất cả thành viên</option>{ledger.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
-            </div><div className="filters-footer"><span>{filteredExpenses.length} khoản phù hợp</span><button disabled={activeFilterCount === 0} onClick={() => setExpenseFilters({ keyword: '', fromDate: '', toDate: '', category: '', memberId: '', periodId: '' })}>Xóa bộ lọc</button></div></div>}
+            </div><div className="filters-footer"><span>{filteredExpenses.length} khoản phù hợp</span><button disabled={activeFilterCount === 0} onClick={() => setExpenseFilters({ keyword: '', fromDate: '', toDate: '', category: '', memberId: '', periodId: '', payerId: '' })}>Xóa bộ lọc</button></div></div>}
             {/* NOTE(VI): Lý do: Giữ nguyên quy tắc khi thêm mới (khoản thêm mới đưa lên đầu ngày/ngày mới), nhưng khi sửa khoản chi thì giữ nguyên vị trí cũ không đưa lên đầu theo yêu cầu người dùng
                 Trước: Sắp xếp theo b.updatedAt -> khi sửa khoản chi thì updatedAt đổi mới nhất, làm khoản đó nhảy lên đầu danh sách
                 Sau: Sắp xếp theo b.date desc rồi đến (b.createdAt ?? b.updatedAt ?? '') desc -> khi thêm mới có createdAt mới nhất nên vẫn lên đầu; khi sửa thì createdAt giữ nguyên vị trí ban đầu không bị nhảy
@@ -1266,6 +1649,13 @@ export default function App() {
         onClose={() => setViewingExpense(null)}
       />
     )}
+    {pendingGuestLedger && (
+      <SelectGuestMemberModal
+        ledger={pendingGuestLedger}
+        onSelect={(member) => void confirmJoinGuest(member)}
+        onClose={() => setPendingGuestLedger(null)}
+      />
+    )}
     {showAccount && <AccountModal
       email={userEmail}
       cloudEnabled={isCloudConfigured}
@@ -1275,7 +1665,13 @@ export default function App() {
       isOwner={ledger.isOwner !== false}
       userLedgers={userLedgers}
       activeLedgerId={activeLedgerId ?? ledger.id}
+      shareCode={ledger.shareCode || ledger.id}
+      onRegenerateShareCode={handleRegenerateShareCode}
+      onRefreshLedgers={async (loggedEmail) => {
+        await hydrate(true, undefined, loggedEmail)
+      }}
       focusRename={accountFocusRename}
+      onShowToast={showToast}
       onClose={() => {
         setShowAccount(false)
         setAccountFocusRename(false)
@@ -1331,9 +1727,16 @@ export default function App() {
           localStorage.removeItem('chia-tien-offline-email')
           localStorage.removeItem('chia-tien-skipped-setup')
           localStorage.removeItem('chia-tien-active-ledger-id')
+          localStorage.removeItem('chia-tien-guest-ledger-id')
+          localStorage.removeItem('chia-tien-guest-member-id')
+          localStorage.removeItem('chia-tien-guest-member-name')
         } catch {}
         setShowAccount(false)
         void signOut()
+        setSession(false)
+        setUserEmail('')
+        setLedger(null)
+        setAuthMode('join_guest')
       }}
     />}
     {/* NOTE(VI): Lý do: Bấm '+ Thêm khoản chi' khi tài khoản chưa có nhóm thì mở thẳng form 'Bắt đầu sổ mới' theo yêu cầu người dùng
@@ -2939,6 +3342,313 @@ function CreatePersonalLedgerModal({
   )
 }
 
+// NOTE(VI): Lý do: Popup form đăng ký / đăng nhập tài khoản khi người dùng chưa có tài khoản bấm "Đăng ký" hoặc bấm "Tạo sổ" trong popup Tài khoản
+// Trước: Chưa có popup đăng ký từ trong modal Tài khoản, người dùng vào sổ bằng UUID không có cách nào đăng ký tài khoản mà không đăng xuất
+// Sau: Hiển thị form đăng ký / đăng nhập có nút Hủy, đóng được dễ dàng; khi đăng ký/đăng nhập thành công thì tự động liên kết tài khoản
+// Test: Khách vào bằng ID -> Mở Tài khoản -> Thấy 'Chưa có tài khoản' + nút Đăng ký -> Bấm Đăng ký -> Hiện form -> Bấm Hủy đóng lại được
+function RegisterModal({
+  onClose,
+  onShowToast,
+  onSuccess,
+}: {
+  onClose: () => void
+  onShowToast?: (msg: string) => void
+  onSuccess?: (email: string) => void
+}) {
+  const [mode, setMode] = useState<'signup' | 'login'>('signup')
+  const [submitting, setSubmitting] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setAuthError('')
+    setNotice('')
+    const form = new FormData(event.currentTarget)
+    const email = String(form.get('email') ?? '').trim()
+    const password = String(form.get('password') ?? '')
+    if (!email || !password) return
+    setSubmitting(true)
+    try {
+      if (mode === 'signup') {
+        await signUp(email, password)
+        setNotice('Đã gửi yêu cầu đăng ký! Nếu email cần xác nhận, vui lòng mở liên kết trong hộp thư trước khi đăng nhập.')
+        if (onShowToast) onShowToast('Đã gửi yêu cầu đăng ký!')
+      } else {
+        await signIn(email, password)
+        if (onShowToast) onShowToast('Đăng nhập thành công!')
+        if (onSuccess) onSuccess(email)
+        onClose()
+      }
+    } catch (err: any) {
+      setAuthError(err?.message || (mode === 'signup' ? 'Không thể tạo tài khoản.' : 'Không thể đăng nhập.'))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div
+      className="avatar-lightbox-backdrop"
+      style={{ zIndex: 10000 }}
+      onClick={() => { if (!submitting) onClose() }}
+    >
+      <div
+        className="auth-card"
+        style={{ margin: 0, width: 'min(100%, 390px)', maxHeight: '92vh', overflowY: 'auto', position: 'relative' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            position: 'absolute',
+            top: '12px',
+            right: '12px',
+            background: '#f3f4f6',
+            border: 'none',
+            borderRadius: '50%',
+            width: '28px',
+            height: '28px',
+            display: 'grid',
+            placeItems: 'center',
+            cursor: 'pointer',
+            color: '#4b5563',
+          }}
+          title="Đóng"
+        >
+          <X size={15} />
+        </button>
+
+        <div style={{ display: 'grid', placeItems: 'center', margin: '0 auto 12px', color: 'var(--green, #257b5c)' }}>
+          <Wallet size={40} strokeWidth={2} />
+        </div>
+
+        {mode === 'signup' ? (
+          <>
+            <h1 style={{ fontSize: '20px', margin: '0 0 6px' }}>Tạo tài khoản quản lý</h1>
+            <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#687066' }}>
+              Đăng ký để tạo và lưu trữ các sổ chi tiêu của riêng bạn.
+            </p>
+            <form onSubmit={(e) => void handleSubmit(e)} className="auth-form">
+              <label>Email
+                <input autoFocus name="email" type="email" required placeholder="ban@email.com" />
+              </label>
+              <label>Mật khẩu
+                <input name="password" type="password" minLength={6} required placeholder="Ít nhất 6 ký tự" />
+              </label>
+              {authError && <div className="form-error">{authError}</div>}
+              {notice && (
+                <div style={{ background: '#f0fdf4', color: '#166534', padding: '10px 12px', borderRadius: '8px', fontSize: '12px', border: '1px solid #bbf7d0', marginBottom: '8px', lineHeight: 1.4 }}>
+                  {notice}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  style={{ flex: 1, height: '40px', fontSize: '13px' }}
+                  disabled={submitting}
+                  onClick={onClose}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="button primary"
+                  style={{ flex: 1.5, height: '40px', fontSize: '13px' }}
+                  disabled={submitting}
+                >
+                  {submitting ? 'Đang tạo...' : 'Tạo tài khoản'}
+                </button>
+              </div>
+            </form>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => { setAuthError(''); setNotice(''); setMode('login') }}
+              style={{ color: '#687066', marginTop: '12px' }}
+            >
+              Đã có tài khoản? Đăng nhập
+            </button>
+            <p className="hint" style={{ marginTop: '8px', fontSize: '11px' }}>
+              Nếu email cần xác nhận, hãy mở liên kết trong hộp thư trước khi đăng nhập.
+            </p>
+          </>
+        ) : (
+          <>
+            <h1 style={{ fontSize: '20px', margin: '0 0 6px' }}>Đăng nhập</h1>
+            <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#687066' }}>
+              Đăng nhập để mở và lưu trữ các sổ chi tiêu của bạn.
+            </p>
+            <form onSubmit={(e) => void handleSubmit(e)} className="auth-form">
+              <label>Email
+                <input autoFocus name="email" type="email" required placeholder="ban@email.com" />
+              </label>
+              <label>Mật khẩu
+                <input name="password" type="password" minLength={6} required placeholder="Ít nhất 6 ký tự" />
+              </label>
+              {authError && <div className="form-error">{authError}</div>}
+              <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  style={{ flex: 1, height: '40px', fontSize: '13px' }}
+                  disabled={submitting}
+                  onClick={onClose}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="button primary"
+                  style={{ flex: 1.5, height: '40px', fontSize: '13px' }}
+                  disabled={submitting}
+                >
+                  {submitting ? 'Đang đăng nhập...' : 'Đăng nhập'}
+                </button>
+              </div>
+            </form>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => { setAuthError(''); setNotice(''); setMode('signup') }}
+              style={{ color: '#687066', marginTop: '12px' }}
+            >
+              Chưa có tài khoản? Tạo mới
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// NOTE(VI): Lý do: Popup chọn thành viên khi khách tham gia sổ bằng mã UUID theo yêu cầu người dùng
+// Trước: Vào thẳng sổ với tên chung là "Khách (Không tài khoản)", không biết khách là ai trong nhóm
+// Sau: Khi nhập UUID xong, hiện danh sách thành viên dạng pill avatar + tên để khách chọn mình là ai, bấm "Xác nhận vào nhóm" thì topbar hiển thị "[Tên thành viên] (Không tài khoản)"
+// Test: Nhập mã UUID -> Hiện popup "Bạn là thành viên nào trong nhóm?" -> Bấm chọn "Kha" -> Bấm "Xác nhận vào nhóm" -> Vào sổ, topbar hiển thị "👤 Kha (Không tài khoản)"
+function SelectGuestMemberModal({
+  ledger,
+  onSelect,
+  onClose,
+}: {
+  ledger: Ledger
+  onSelect: (member: Member) => void
+  onClose: () => void
+}) {
+  const activeMembers = ledger.members.filter((m) => m.active)
+  const [selectedId, setSelectedId] = useState<string>('')
+
+  return (
+    <div
+      className="avatar-lightbox-backdrop"
+      style={{ zIndex: 10000 }}
+      onClick={onClose}
+    >
+      <div
+        className="auth-card"
+        style={{
+          margin: 0,
+          width: 'min(100%, 400px)',
+          maxHeight: '92vh',
+          overflowY: 'auto',
+          position: 'relative',
+          padding: '24px 20px',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            position: 'absolute',
+            top: '12px',
+            right: '12px',
+            background: '#f3f4f6',
+            border: 'none',
+            borderRadius: '50%',
+            width: '28px',
+            height: '28px',
+            display: 'grid',
+            placeItems: 'center',
+            cursor: 'pointer',
+            color: '#4b5563',
+          }}
+          title="Đóng"
+        >
+          <X size={15} />
+        </button>
+
+        <div style={{ display: 'grid', placeItems: 'center', margin: '0 auto 12px', color: 'var(--green, #257b5c)' }}>
+          <UserRound size={40} strokeWidth={2} />
+        </div>
+
+        <span className="eyebrow" style={{ display: 'block', textAlign: 'center', marginBottom: '4px' }}>
+          {ledger.name}
+        </span>
+        <h1 style={{ fontSize: '19px', margin: '0 0 6px', textAlign: 'center' }}>
+          Bạn là thành viên nào trong nhóm?
+        </h1>
+        <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#687066', textAlign: 'center', lineHeight: 1.45 }}>
+          Chọn tên của bạn để hiển thị đúng các khoản chi và phần tiền cần chia.
+        </p>
+
+        <div className="account-group-members" style={{ justifyContent: 'center', margin: '14px 0 22px' }}>
+          {activeMembers.map((member, index) => {
+            const isSelected = member.id === selectedId
+            return (
+              <div
+                key={member.id}
+                role="button"
+                tabIndex={0}
+                className={`account-group-member ${isSelected ? 'active' : ''}`}
+                onClick={() => setSelectedId(member.id)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedId(member.id) }}
+                style={{
+                  padding: '7px 14px 7px 7px',
+                  fontSize: '13.5px',
+                  transform: isSelected ? 'scale(1.05)' : 'none',
+                  boxShadow: isSelected ? '0 2px 8px rgba(37, 123, 92, 0.25)' : 'none',
+                  transition: 'all 0.15s ease',
+                  userSelect: 'none',
+                }}
+              >
+                <MemberAvatar member={member} index={index} className="tiny" />
+                <span>{member.name}</span>
+                {isSelected && <Check size={13} strokeWidth={2.5} style={{ marginLeft: '4px' }} />}
+              </div>
+            )
+          })}
+        </div>
+
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            type="button"
+            className="button secondary"
+            style={{ flex: 1, height: '40px', fontSize: '13px' }}
+            onClick={onClose}
+          >
+            Hủy
+          </button>
+          <button
+            type="button"
+            className="button primary"
+            disabled={!selectedId}
+            style={{ flex: 1.8, height: '40px', fontSize: '13px' }}
+            onClick={() => {
+              const found = activeMembers.find((m) => m.id === selectedId)
+              if (found) onSelect(found)
+            }}
+          >
+            <Check size={15} style={{ marginRight: '4px' }} /> Xác nhận vào nhóm
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AccountModal({
   email,
   cloudEnabled,
@@ -2948,7 +3658,11 @@ function AccountModal({
   isOwner,
   userLedgers,
   activeLedgerId,
+  shareCode,
+  onRegenerateShareCode,
+  onRefreshLedgers,
   focusRename,
+  onShowToast,
   onClose,
   onUpdateGroupName,
   onAddMember,
@@ -2967,7 +3681,11 @@ function AccountModal({
   isOwner: boolean
   userLedgers: LedgerListItem[]
   activeLedgerId: string | null
+  shareCode?: string | null
+  onRegenerateShareCode?: (targetGroupId?: string) => Promise<string | void>
+  onRefreshLedgers?: (email?: string) => Promise<void>
   focusRename?: boolean
+  onShowToast?: (msg: string) => void
   onClose: () => void
   onUpdateGroupName?: (newName: string) => Promise<void>
   onAddMember: (name: string, email?: string | null) => Promise<void>
@@ -2979,8 +3697,19 @@ function AccountModal({
   onLogout: () => void
 }) {
   const activeMembers = members.filter((member) => member.active)
-  const hasOwnedLedger = userLedgers.some((l) => l.isOwner)
+  const displayLedgers: LedgerListItem[] = userLedgers.length > 0
+    ? userLedgers
+    : (activeLedgerId && activeLedgerId !== 'uncreated-personal-ledger'
+        ? [{ id: activeLedgerId || 'current', name: groupName, isOwner: isOwner }]
+        : [])
+  const hasOwnedLedger = displayLedgers.some((l) => l.isOwner) || isOwner
   const [showCreatePersonalForm, setShowCreatePersonalForm] = useState(false)
+  const [showRegisterModal, setShowRegisterModal] = useState(false)
+  const [sharingLedger, setSharingLedger] = useState<{ id: string; name: string; shareCode: string; isOwner: boolean } | null>(null)
+
+  useEffect(() => {
+    if (email) setShowRegisterModal(false)
+  }, [email])
   const [editingLedgerId, setEditingLedgerId] = useState<string | null>(focusRename ? (activeLedgerId || 'current') : null)
   const [tempGroupName, setTempGroupName] = useState(groupName)
   const [savingGroupName, setSavingGroupName] = useState(false)
@@ -3008,6 +3737,43 @@ function AccountModal({
   const ownerFileInputRef = useRef<HTMLInputElement>(null)
   const memberFileInputRef = useRef<HTMLInputElement>(null)
   const targetMemberIdRef = useRef<string | null>(null)
+
+  const currentShareCode = shareCode || activeLedgerId || ''
+  const [copiedCode, setCopiedCode] = useState(false)
+  const [isRegenerating, setIsRegenerating] = useState(false)
+
+  const handleCopyUuid = async (codeToCopy?: string) => {
+    const code = codeToCopy || (sharingLedger?.shareCode) || currentShareCode
+    if (!code) return
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopiedCode(true)
+      setTimeout(() => setCopiedCode(false), 2000)
+      if (onShowToast) onShowToast('Đã sao chép mã UUID!')
+    } catch {
+      if (onShowToast) onShowToast('Không thể sao chép tự động')
+    }
+  }
+
+  const handleRegenerate = async (targetId?: string) => {
+    if (isRegenerating || !onRegenerateShareCode) return
+    const confirmed = window.confirm(
+      'Bạn có chắc chắn muốn tạo mã UUID mới?\n\n' +
+      'Lưu ý: Sau khi đổi, bất kỳ ai dùng mã cũ (nếu chưa lưu hoặc bị xóa cache) sẽ không thể vào sổ và phải dùng mã mới.'
+    )
+    if (!confirmed) return
+    setIsRegenerating(true)
+    try {
+      const newCode = await onRegenerateShareCode(targetId)
+      if (newCode && typeof newCode === 'string') {
+        setSharingLedger((prev) => prev ? { ...prev, shareCode: newCode } : null)
+      }
+    } catch (err: any) {
+      if (onShowToast) onShowToast(err?.message || 'Không thể tạo mã mới.')
+    } finally {
+      setIsRegenerating(false)
+    }
+  }
 
   // NOTE(VI): Lý do: Lấy phiên bản runtime từ window.__APP_VERSION__ (do version.js nạp vào) để ở localhost và prod luôn nhận đúng bản mới nhất mà không phụ thuộc vào việc restart process Vite
   // Trước: Dùng __APP_VERSION__ cứng của Vite define -> khi đổi version.js ở localhost mà chưa restart Vite dev thì số phiên bản bị lệch
@@ -3171,7 +3937,26 @@ function AccountModal({
           <Camera size={11} />
         </button>
       </div>
-      <div><span>Email đăng nhập</span><strong>{email || (cloudEnabled ? 'Chưa đăng nhập' : 'Không dùng tài khoản')}</strong></div>
+      {/* NOTE(VI): Lý do: Đổi email đăng nhập cho khách chưa có tài khoản thành "Chưa có tài khoản" kèm nút Đăng ký theo yêu cầu người dùng
+          Trước: Hiển thị "Khách (Không cần tài khoản)", không có nút đăng ký
+          Sau: Hiển thị "Chưa có tài khoản" và nút "Đăng ký", bấm vào mở popup form đăng ký/đăng nhập có nút Hủy
+          Test: Khách vào bằng ID -> Mở popup Tài khoản -> Thấy dòng "Chưa có tài khoản" và nút "Đăng ký" -> Bấm "Đăng ký" mở popup */}
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', minWidth: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
+          <span>Email đăng nhập</span>
+          <strong style={{ color: email ? 'inherit' : '#b45309', whiteSpace: 'nowrap' }}>{email || 'Chưa có tài khoản'}</strong>
+        </div>
+        {!email && (
+          <button
+            type="button"
+            className="button primary"
+            style={{ height: '32px', fontSize: '12.5px', padding: '0 12px', whiteSpace: 'nowrap', flexShrink: 0, borderRadius: '8px' }}
+            onClick={() => setShowRegisterModal(true)}
+          >
+            <UserPlus size={14} style={{ marginRight: '4px' }} /> Đăng ký
+          </button>
+        )}
+      </div>
     </div>
     {/* NOTE(VI): Lý do: Ẩn phần Thông tin nhóm nếu chưa tạo sổ cá nhân hoặc đang xem sổ được mời theo yêu cầu người dùng
         Trước: Luôn hiển thị Thông tin nhóm (kể cả nhóm của sổ được mời)
@@ -3283,10 +4068,10 @@ function AccountModal({
         Trước: Chỉ hiển thị sổ mặc định
         Sau: Hiển thị đầy đủ các sổ, có nhãn Chủ sổ / Được mời, bấm vào đổi sổ ngay lập tức và lưu vào localStorage
         Test: Có 2 sổ -> thấy danh sách 2 sổ -> bấm đổi sổ -> chuyển sang sổ kia và tải lại dữ liệu */}
-    {/* NOTE(VI): Lý do: Gộp tính năng đổi tên sổ chi tiêu ✏️ trực tiếp vào danh sách "Sổ chi tiêu của bạn" theo yêu cầu người dùng
-        Trước: Có 2 khung riêng làm tên sổ bị lặp lại 2 lần
-        Sau: Gộp nút ✏️ Đổi tên vào từng sổ trong danh sách "Sổ chi tiêu của bạn" (chỉ chủ sổ mới có quyền đổi); bỏ khung tên sổ độc lập
-        Test: Mở popup Tài khoản -> thấy danh sách sổ -> bấm icon ✏️ cạnh tên sổ của mình -> nhập tên mới và lưu -> tên sổ cập nhật tức thì */}
+    {/* NOTE(VI): Lý do: Bỏ text "✓ Đang mở", sổ đang mở được tô đậm hơn; chuyển icon Pencil sửa tên sang cuối dòng; thêm icon Share2 mở popup chia sẻ sổ
+        Trước: Khung chia sẻ đặt cố định chiếm diện tích; có text "✓ Đang mở" ở cuối dòng; icon Pencil nằm cạnh nhãn Chủ sổ
+        Sau: Bỏ khung chia sẻ tĩnh; sổ đang mở có viền xanh 2px và tên in đậm; icon Pencil và icon Share2 nằm ở cuối dòng; bấm Share2 mở popup chia sẻ
+        Test: Mở modal Tài khoản -> Thấy sổ đang mở in đậm rõ rệt, không còn text "✓ Đang mở" -> Cuối dòng có icon Pencil và Share2 -> Bấm Share2 mở popup UUID */}
     {(() => {
       const displayLedgers: LedgerListItem[] = userLedgers.length > 0
         ? userLedgers
@@ -3295,10 +4080,6 @@ function AccountModal({
             : [])
       return (
         <section className="account-group-info" style={{ marginTop: '12px', borderTop: '1px solid #e5e7eb', paddingTop: '12px' }}>
-          {/* NOTE(VI): Lý do: Đổi tiêu đề 'Sổ chi tiêu của người dùng' thành 'Danh sách sổ chi tiêu' theo yêu cầu người dùng
-              Trước: <span>Sổ chi tiêu của người dùng ({count})</span>
-              Sau: <span>Danh sách sổ chi tiêu ({count})</span>
-              Test: Mở popup Tài khoản -> Thấy tiêu đề mục sổ là 'Danh sách sổ chi tiêu (1)' */}
           <div className="account-group-heading"><span>Danh sách sổ chi tiêu ({displayLedgers.length > 0 ? displayLedgers.length : 1})</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
             {displayLedgers.map((l) => {
@@ -3315,8 +4096,10 @@ function AccountModal({
                     padding: '8px 12px',
                     borderRadius: '8px',
                     background: isActive ? '#f0fdf4' : '#ffffff',
-                    border: isActive ? '1.5px solid #22c55e' : '1px solid #e5e7eb',
+                    border: isActive ? '2px solid #22c55e' : '1px solid #e5e7eb',
+                    boxShadow: isActive ? '0 1px 3px rgba(34, 197, 94, 0.12)' : 'none',
                     cursor: (isActive || isEditingThis) ? 'default' : 'pointer',
+                    gap: '8px',
                   }}
                 >
                   {isEditingThis ? (
@@ -3367,9 +4150,15 @@ function AccountModal({
                     </form>
                   ) : (
                     <>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <strong style={{ fontSize: '13px', color: '#111827' }}>{l.name}</strong>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0, flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <strong style={{
+                            fontSize: isActive ? '13.5px' : '13px',
+                            fontWeight: isActive ? 800 : 500,
+                            color: isActive ? '#15803d' : '#111827',
+                          }}>
+                            {l.name}
+                          </strong>
                           <span style={{
                             fontSize: '10px',
                             fontWeight: 600,
@@ -3380,6 +4169,7 @@ function AccountModal({
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: '3px',
+                            flexShrink: 0,
                           }}>
                             {l.isOwner ? (
                               <>
@@ -3390,29 +4180,6 @@ function AccountModal({
                               '👥 Được mời'
                             )}
                           </span>
-                          {l.isOwner && (
-                            <button
-                              type="button"
-                              style={{
-                                background: 'none',
-                                border: 'none',
-                                padding: '2px 4px',
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                color: '#6b7280',
-                                borderRadius: '4px',
-                              }}
-                              title="Đổi tên sổ"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setEditingLedgerId(l.id)
-                                setTempGroupName(l.name)
-                              }}
-                            >
-                              <Pencil size={11} />
-                            </button>
-                          )}
                         </div>
                         {!l.isOwner && (
                           <div style={{ fontSize: '11px', color: '#4b5563', marginTop: '3px', lineHeight: 1.4 }}>
@@ -3433,18 +4200,78 @@ function AccountModal({
                           </div>
                         )}
                       </div>
-                      {isActive ? (
-                        <span style={{ fontSize: '12px', color: '#16a34a', fontWeight: 600 }}>✓ Đang mở</span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="button secondary"
-                          style={{ height: '28px', fontSize: '12px', padding: '0 10px', whiteSpace: 'nowrap' }}
-                          onClick={(e) => { e.stopPropagation(); void onSwitchLedger(l.id) }}
-                        >
-                          Mở sổ này
-                        </button>
-                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                        {!isActive && (
+                          <button
+                            type="button"
+                            className="button secondary"
+                            style={{ height: '28px', fontSize: '12px', padding: '0 8px', whiteSpace: 'nowrap' }}
+                            onClick={(e) => { e.stopPropagation(); void onSwitchLedger(l.id) }}
+                            title="Mở sổ này"
+                          >
+                            Mở
+                          </button>
+                        )}
+                        {l.isOwner && (
+                          <button
+                            type="button"
+                            style={{
+                              background: '#ffffff',
+                              border: '1px solid #d1d5db',
+                              borderRadius: '6px',
+                              width: '28px',
+                              height: '28px',
+                              padding: 0,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              color: '#4b5563',
+                            }}
+                            title="Đổi tên sổ"
+                            aria-label="Đổi tên sổ"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setEditingLedgerId(l.id)
+                              setTempGroupName(l.name)
+                            }}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                        )}
+                        {l.isOwner && (
+                          <button
+                            type="button"
+                            style={{
+                              background: '#ffffff',
+                              border: '1px solid #d1d5db',
+                              borderRadius: '6px',
+                              width: '28px',
+                              height: '28px',
+                              padding: 0,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              color: '#15803d',
+                            }}
+                            title="Chia sẻ sổ cho bạn bè (Không cần tài khoản)"
+                            aria-label="Chia sẻ sổ cho bạn bè"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              const code = (isActive ? currentShareCode : (l.shareCode || l.id))
+                              setSharingLedger({
+                                id: l.id,
+                                name: l.name,
+                                shareCode: code,
+                                isOwner: l.isOwner,
+                              })
+                            }}
+                          >
+                            <Share2 size={13} />
+                          </button>
+                        )}
+                      </div>
                     </>
                   )}
                 </div>
@@ -3455,10 +4282,18 @@ function AccountModal({
                 Trước: Người dùng được mời không có chỗ để tạo sổ cá nhân riêng của mình
                 Sau: Hiển thị 1 sổ 'Sổ chi tiêu (chưa tạo)' kèm nút '+ Tạo sổ', click vào mở form Bắt đầu sổ mới
                 Test: Đăng nhập tài khoản mới được mời -> Thấy dòng 'Sổ chi tiêu (chưa tạo)' -> Bấm vào hiện form tạo sổ -> Có nút Hủy và Tạo */}
+            {/* NOTE(VI): Lý do: Khi khách chưa có tài khoản bấm Tạo sổ thì chuyển sang mở form Đăng ký thay vì form Bắt đầu sổ mới
+                Trước: Luôn mở form CreatePersonalLedgerModal kể cả khi chưa có tài khoản
+                Sau: Nếu chưa có tài khoản (!email) -> mở popup Đăng ký (RegisterModal); nếu đã có tài khoản -> mở form Tạo sổ
+                Test: Khách vào bằng ID -> Bấm vào dòng Sổ chi tiêu (chưa tạo) hoặc nút "+ Tạo sổ" -> Mở form Đăng ký có nút Hủy */}
             {!hasOwnedLedger && onCreatePersonalLedger && (
               <div
                 onClick={() => {
-                  setShowCreatePersonalForm(true)
+                  if (!email) {
+                    setShowRegisterModal(true)
+                  } else {
+                    setShowCreatePersonalForm(true)
+                  }
                 }}
                 style={{
                   display: 'flex',
@@ -3471,7 +4306,7 @@ function AccountModal({
                   cursor: 'pointer',
                   transition: 'background 0.15s, border-color 0.15s',
                 }}
-                title="Bấm để tạo sổ chi tiêu cá nhân của bạn"
+                title={!email ? 'Bấm để đăng ký tài khoản và tạo sổ' : 'Bấm để tạo sổ chi tiêu cá nhân của bạn'}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -3487,7 +4322,9 @@ function AccountModal({
                       chưa tạo
                     </span>
                   </div>
-                  <span style={{ fontSize: '11px', color: '#9ca3af' }}>Bấm vào đây để tạo sổ của riêng bạn</span>
+                  <span style={{ fontSize: '11px', color: '#9ca3af' }}>
+                    {!email ? 'Cần đăng ký tài khoản để tạo sổ riêng' : 'Bấm vào đây để tạo sổ của riêng bạn'}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -3495,7 +4332,11 @@ function AccountModal({
                   style={{ height: '28px', fontSize: '12px', padding: '0 10px', whiteSpace: 'nowrap' }}
                   onClick={(e) => {
                     e.stopPropagation()
-                    setShowCreatePersonalForm(true)
+                    if (!email) {
+                      setShowRegisterModal(true)
+                    } else {
+                      setShowCreatePersonalForm(true)
+                    }
                   }}
                 >
                   <Plus size={13} /> Tạo sổ
@@ -3560,7 +4401,11 @@ function AccountModal({
         </div>
       )}
     </section>
-    {cloudEnabled && <button className="account-logout" onClick={onLogout}><LogOut size={16} /> Đăng xuất</button>}
+    {cloudEnabled && (
+      <button className="account-logout" onClick={onLogout}>
+        <LogOut size={16} /> {!email ? 'Rời khỏi sổ này' : 'Đăng xuất'}
+      </button>
+    )}
     {previewAvatar && (
       <div className="avatar-lightbox-backdrop" onClick={() => setPreviewAvatar(null)}>
         <div className="avatar-lightbox-card" onClick={(e) => e.stopPropagation()}>
@@ -3599,6 +4444,152 @@ function AccountModal({
           if (!onCreatePersonalLedger) return
           await onCreatePersonalLedger(name, memberNames)
           setShowCreatePersonalForm(false)
+        }}
+      />
+    )}
+    {/* NOTE(VI): Lý do: Tinh giản popup Chia sẻ sổ chi tiêu theo yêu cầu người dùng
+        Trước: Tiêu đề dài kèm tên sổ và subtitle, có quá nhiều ghi chú giải thích bên dưới
+        Sau: Tiêu đề ngắn "Chia sẻ sổ chi tiêu", bỏ tên sổ và subtitle, thông tin hướng dẫn rút gọn kèm nút icon 🔄 tạo mã mới và ô UUID
+        Test: Mở modal Tài khoản -> Bấm nút Share -> Thấy popup "Chia sẻ sổ chi tiêu" tối giản, hiển thị đúng ID và nút tạo mã */}
+    {sharingLedger && sharingLedger.isOwner && (
+      <div
+        className="avatar-lightbox-backdrop"
+        style={{ zIndex: 10000 }}
+        onClick={() => setSharingLedger(null)}
+      >
+        <div
+          className="avatar-lightbox-card"
+          style={{
+            maxWidth: '380px',
+            width: '90%',
+            padding: '20px',
+            alignItems: 'stretch',
+            borderRadius: '16px',
+            textAlign: 'left',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#111827' }}>
+              Chia sẻ sổ chi tiêu
+            </h3>
+            <button
+              type="button"
+              onClick={() => setSharingLedger(null)}
+              style={{
+                background: '#f3f4f6',
+                border: 'none',
+                borderRadius: '50%',
+                width: '28px',
+                height: '28px',
+                display: 'grid',
+                placeItems: 'center',
+                cursor: 'pointer',
+                color: '#4b5563',
+              }}
+              title="Đóng"
+            >
+              <X size={15} />
+            </button>
+          </div>
+
+          <div style={{
+            marginTop: '6px',
+            padding: '12px',
+            background: '#f0fdf4',
+            border: '1px solid #bbf7d0',
+            borderRadius: '8px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+          }}>
+            <p style={{ fontSize: '12.5px', color: '#166534', margin: 0, lineHeight: 1.45 }}>
+              Người khác chỉ cần nhập ID này để vào sổ ngay mà <b>không cần tạo tài khoản</b>. Bấm nút 🔄 để tạo mã mới.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div
+                role="button"
+                tabIndex={0}
+                title="Bấm vào ô để sao chép mã ID"
+                aria-label="Sao chép mã ID"
+                onClick={() => void handleCopyUuid(sharingLedger.shareCode)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') void handleCopyUuid(sharingLedger.shareCode) }}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  background: '#ffffff',
+                  border: '1px dashed #22c55e',
+                  borderRadius: '6px',
+                  padding: '8px 10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                  cursor: 'pointer',
+                  userSelect: 'all',
+                }}
+              >
+                <span style={{
+                  fontFamily: 'monospace',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: '#15803d',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {sharingLedger.shareCode}
+                </span>
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '11px',
+                  color: copiedCode ? '#16a34a' : '#6b7280',
+                  fontWeight: 500,
+                  flexShrink: 0,
+                }}>
+                  {copiedCode ? <Check size={14} /> : <Copy size={14} />}
+                  {copiedCode ? 'Đã chép' : 'Chép'}
+                </span>
+              </div>
+              {sharingLedger.isOwner && onRegenerateShareCode && (
+                <button
+                  type="button"
+                  className="button secondary"
+                  title="Tạo mã mới (đổi mã truy cập)"
+                  aria-label="Tạo mã mới"
+                  disabled={isRegenerating}
+                  onClick={() => void handleRegenerate(sharingLedger.id)}
+                  style={{
+                    height: '38px',
+                    width: '38px',
+                    padding: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                    background: '#ffffff',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '6px',
+                    cursor: isRegenerating ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <RefreshCw size={15} className={isRegenerating ? 'spin' : ''} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    {showRegisterModal && (
+      <RegisterModal
+        onClose={() => setShowRegisterModal(false)}
+        onShowToast={onShowToast}
+        onSuccess={(loggedEmail) => {
+          setShowRegisterModal(false)
+          if (onRefreshLedgers) void onRefreshLedgers(loggedEmail)
         }}
       />
     )}

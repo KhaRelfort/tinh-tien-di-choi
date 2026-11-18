@@ -20,12 +20,14 @@ export type SettlementPeriod = { id: string; startDate: string; endDate: string 
 export type Ledger = {
   id: string; name: string; ownerAvatarUrl?: string | null;
   members: Member[]; expenses: Expense[]; settlements: Settlement[]; periods: SettlementPeriod[];
-  isOwner?: boolean; currentUserEmail?: string; currentMemberId?: string | null
+  isOwner?: boolean; currentUserEmail?: string; currentMemberId?: string | null; isGuest?: boolean;
+  shareCode?: string | null
 }
 export type LedgerListItem = {
   id: string; name: string; isOwner: boolean; ownerEmail?: string;
   linkedMemberName?: string | null; linkedMemberId?: string | null; createdAt?: string
   expenseCount?: number
+  shareCode?: string | null
 }
 export type Operation =
   | { opId: string; kind: 'expense_upsert'; record: Expense; expectedUpdatedAt: string | null; groupId?: string }
