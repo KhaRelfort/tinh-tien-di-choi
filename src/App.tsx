@@ -42,11 +42,11 @@ function Motorbike({ size = 17, ...props }: { size?: number } & React.SVGProps<S
   )
 }
 
-// NOTE(VI): Lý do: Đổi danh mục 'Dịch vụ và giải trí' lên vị trí thứ 2 (sau Ăn uống), đổi icon Khác thành $ (DollarSign) theo yêu cầu người dùng
-// Trước: ['Ăn uống', 'Di chuyển', 'Mua sắm', 'Du lịch', 'Giải trí và dịch vụ', 'Khác'], Khác dùng icon Coffee
-// Sau: ['Ăn uống', 'Dịch vụ và giải trí', 'Di chuyển', 'Mua sắm', 'Du lịch', 'Khác'], Khác dùng icon DollarSign ($)
-// Test: Mở form thêm khoản chi -> Dropdown hiển thị 'Dịch vụ và giải trí' ở vị trí thứ 2; khoản chi 'Khác' hiển thị icon $
-const categories = ['Ăn uống', 'Dịch vụ và giải trí', 'Di chuyển', 'Mua sắm', 'Du lịch', 'Khác']
+// NOTE(VI): Lý do: Bỏ danh mục 'Di chuyển' và 'Mua sắm' theo yêu cầu người dùng
+// Trước: ['Ăn uống', 'Dịch vụ và giải trí', 'Di chuyển', 'Mua sắm', 'Du lịch', 'Khác']
+// Sau: ['Ăn uống', 'Dịch vụ và giải trí', 'Du lịch', 'Khác']
+// Test: Mở form thêm khoản chi và dropdown bộ lọc -> Chỉ còn 4 danh mục: Ăn uống, Dịch vụ và giải trí, Du lịch, Khác
+const categories = ['Ăn uống', 'Dịch vụ và giải trí', 'Du lịch', 'Khác']
 const categoryIcon = (category: string) => {
   switch (category) {
     case 'Ăn uống':
@@ -106,9 +106,41 @@ function MemberAvatar({ member, index, className = '' }: { member?: Member; inde
   return <span className={`person-avatar ${className}`} style={{ background: memberColor(index ?? 0) }}>{(member?.name ?? '?')[0]}</span>
 }
 
-function AccountAvatar({ avatarUrl, className = '', size = 16 }: { avatarUrl?: string | null; className?: string; size?: number }) {
+function AccountAvatar({
+  avatarUrl,
+  className = '',
+  size = 16,
+  fallbackText,
+  fallbackBg,
+}: {
+  avatarUrl?: string | null
+  className?: string
+  size?: number
+  fallbackText?: string | null
+  fallbackBg?: string | null
+}) {
   if (avatarUrl) {
     return <span className={`account-avatar ${className}`} style={{ padding: 0, overflow: 'hidden' }}><img src={avatarUrl} alt="Avatar" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /></span>
+  }
+  if (fallbackText) {
+    return (
+      <span
+        className={`account-avatar ${className}`}
+        style={{
+          background: fallbackBg || '#257b5c',
+          color: '#fff',
+          fontWeight: 700,
+          fontSize: className.includes('large') ? '16px' : '12px',
+          borderRadius: '50%',
+          display: 'grid',
+          placeItems: 'center',
+          overflow: 'hidden',
+          padding: 0,
+        }}
+      >
+        {fallbackText}
+      </span>
+    )
   }
   return <span className={`account-avatar ${className}`}><UserRound size={size} /></span>
 }
@@ -1446,7 +1478,41 @@ export default function App() {
         </div>
         <div className="top-actions">
           {(!isOnline || syncing || pendingCount > 0 || showSavedStatus) && <div className={`sync-status ${isOnline ? 'online' : 'offline'}`} title={!isOnline ? 'Đang offline' : syncing ? 'Đang đồng bộ' : pendingCount ? `${pendingCount} thay đổi chờ đồng bộ` : 'Đã đồng bộ'}>{isOnline ? <Cloud size={15} /> : <CloudOff size={15} />}<span>{!isOnline ? 'Offline' : syncing ? 'Đang lưu' : pendingCount ? `${pendingCount} chờ` : 'Đã lưu'}</span></div>}
-          <button className="account-button" title="Tài khoản" aria-label="Mở thông tin tài khoản" aria-expanded={showAccount} onClick={() => setShowAccount(true)}><AccountAvatar avatarUrl={ledger.ownerAvatarUrl} size={16} /></button>
+          {/* NOTE(VI): Lý do: Hiển thị avatar của thành viên đã chọn khi người dùng vào bằng UUID (khách chưa có tài khoản) theo yêu cầu người dùng
+              Trước: Luôn hiển thị avatar của chủ sổ (ownerAvatarUrl) hoặc icon UserRound
+              Sau: Nếu là khách (chưa đăng nhập email), hiển thị avatar/tên viết tắt của thành viên mà người đó đã chọn lúc vào sổ
+              Test: Khách vào bằng UUID và chọn Kha -> Nút tài khoản ở góc trên cùng bên phải hiển thị ngay avatar của Kha */}
+          {(() => {
+            const guestMember = (!userEmail && ledger)
+              ? ledger.members.find((m) => m.id === ledger.currentMemberId)
+                || (typeof window !== 'undefined'
+                    ? ledger.members.find((m) => m.id === (localStorage.getItem(`chia-tien-guest-member-id-${ledger.id}`) || localStorage.getItem('chia-tien-guest-member-id')))
+                      || ledger.members.find((m) => m.name === (localStorage.getItem(`chia-tien-guest-member-name-${ledger.id}`) || localStorage.getItem('chia-tien-guest-member-name')))
+                    : undefined)
+              : undefined
+
+            const guestIdx = guestMember ? ledger.members.indexOf(guestMember) : -1
+            const avatarUrl = guestMember ? guestMember.avatarUrl : ledger.ownerAvatarUrl
+            const fallbackText = guestMember ? (guestMember.name.trim().charAt(0) || '?').toUpperCase() : null
+            const fallbackBg = guestMember ? memberColor(guestIdx >= 0 ? guestIdx : 0) : null
+
+            return (
+              <button
+                className="account-button"
+                title="Tài khoản"
+                aria-label="Mở thông tin tài khoản"
+                aria-expanded={showAccount}
+                onClick={() => setShowAccount(true)}
+              >
+                <AccountAvatar
+                  avatarUrl={avatarUrl}
+                  fallbackText={fallbackText}
+                  fallbackBg={fallbackBg}
+                  size={16}
+                />
+              </button>
+            )
+          })()}
         </div>
       </header>
       <div className="content">
@@ -1662,6 +1728,7 @@ export default function App() {
       groupName={ledger.name}
       ownerAvatarUrl={ledger.ownerAvatarUrl}
       members={ledger.members}
+      currentMemberId={ledger.currentMemberId}
       isOwner={ledger.isOwner !== false}
       userLedgers={userLedgers}
       activeLedgerId={activeLedgerId ?? ledger.id}
@@ -3655,6 +3722,7 @@ function AccountModal({
   groupName,
   ownerAvatarUrl,
   members,
+  currentMemberId,
   isOwner,
   userLedgers,
   activeLedgerId,
@@ -3678,6 +3746,7 @@ function AccountModal({
   groupName: string
   ownerAvatarUrl?: string | null
   members: Member[]
+  currentMemberId?: string | null
   isOwner: boolean
   userLedgers: LedgerListItem[]
   activeLedgerId: string | null
@@ -3703,6 +3772,24 @@ function AccountModal({
         ? [{ id: activeLedgerId || 'current', name: groupName, isOwner: isOwner }]
         : [])
   const hasOwnedLedger = displayLedgers.some((l) => l.isOwner) || isOwner
+
+  const guestMember = (!email && members.length > 0)
+    ? members.find((m) => m.id === currentMemberId)
+      || (typeof window !== 'undefined'
+          ? members.find((m) => m.id === (localStorage.getItem(`chia-tien-guest-member-id-${activeLedgerId}`) || localStorage.getItem('chia-tien-guest-member-id')))
+            || members.find((m) => m.name === (localStorage.getItem(`chia-tien-guest-member-name-${activeLedgerId}`) || localStorage.getItem('chia-tien-guest-member-name')))
+          : undefined)
+    : undefined
+
+  const guestIdx = guestMember ? members.indexOf(guestMember) : -1
+  const displayAvatarUrl = guestMember ? guestMember.avatarUrl : ownerAvatarUrl
+  const displayAvatarName = guestMember ? guestMember.name : (email || 'Tài khoản quản lý')
+  const displayAvatarInitial = guestMember
+    ? (guestMember.name.trim().charAt(0) || '?').toUpperCase()
+    : (email?.charAt(0) || 'U').toUpperCase()
+  const displayAvatarColor = guestMember
+    ? memberColor(guestIdx >= 0 ? guestIdx : 0)
+    : '#257b5c'
   const [showCreatePersonalForm, setShowCreatePersonalForm] = useState(false)
   const [showRegisterModal, setShowRegisterModal] = useState(false)
   const [sharingLedger, setSharingLedger] = useState<{ id: string; name: string; shareCode: string; isOwner: boolean } | null>(null)
@@ -3919,23 +4006,31 @@ function AccountModal({
           type="button"
           className="account-avatar-btn"
           onClick={() => setPreviewAvatar({
-            url: ownerAvatarUrl,
-            name: email || 'Tài khoản quản lý',
-            initial: (email?.charAt(0) || 'U').toUpperCase(),
-            color: '#257b5c',
+            url: displayAvatarUrl,
+            name: displayAvatarName,
+            initial: displayAvatarInitial,
+            color: displayAvatarColor,
           })}
           title="Bấm để xem ảnh phóng to"
         >
-          <AccountAvatar avatarUrl={ownerAvatarUrl} className="large" size={20} />
+          <AccountAvatar
+            avatarUrl={displayAvatarUrl}
+            fallbackText={displayAvatarInitial}
+            fallbackBg={displayAvatarColor}
+            className="large"
+            size={20}
+          />
         </button>
-        <button
-          type="button"
-          className="account-avatar-cam-btn"
-          onClick={() => ownerFileInputRef.current?.click()}
-          title="Đổi avatar tài khoản"
-        >
-          <Camera size={11} />
-        </button>
+        {isOwner && (
+          <button
+            type="button"
+            className="account-avatar-cam-btn"
+            onClick={() => ownerFileInputRef.current?.click()}
+            title="Đổi avatar tài khoản"
+          >
+            <Camera size={11} />
+          </button>
+        )}
       </div>
       {/* NOTE(VI): Lý do: Đổi email đăng nhập cho khách chưa có tài khoản thành "Chưa có tài khoản" kèm nút Đăng ký theo yêu cầu người dùng
           Trước: Hiển thị "Khách (Không cần tài khoản)", không có nút đăng ký
